@@ -1,36 +1,57 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# PréPrompto
 
-## Getting Started
+Aplicação para organizar o planejamento docente, acompanhar tópicos da ementa e preparar materiais didáticos.
 
-First, run the development server:
+## Desenvolvimento
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Abra [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Conexão Supabase
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Copie `.env.example` para `.env.local` e configure a URL do projeto e sua chave pública `sb_publishable_...` (ou chave `anon` legada). Essas chaves são destinadas ao cliente; nunca configure ou exponha uma chave `service_role`/`sb_secret` no frontend.
 
-## Learn More
+O acesso ao Supabase é feito por Server Actions com sessão em cookies HTTP-only. Cada ação verifica o usuário autenticado; o banco aplica RLS e deriva `professor_id` da sessão, não dos dados enviados pelo navegador.
 
-To learn more about Next.js, take a look at the following resources:
+## Banco de dados Supabase
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+A estrutura inicial está em `supabase/migrations/20261007230000_initial_schema.sql`. Os nomes de entidades, campos, tipos, políticas e funções criados pelo projeto estão em português:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- `professores`, `materias` e `turmas` para a gestão acadêmica;
+- `ementas` e `topicos_ementa` para documentos-base, extração e acompanhamento do conteúdo;
+- `pre_promptos` para cabeçalhos, instruções e layouts reutilizáveis;
+- `artefatos` e `artefatos_topicos` para roteiros, atividades e provas relacionados aos tópicos;
+- `correcoes` para respostas, notas e devolutivas vinculadas às provas;
+- buckets privados `documentos-base` e `respostas-avaliacao`.
 
-## Deploy on Vercel
+As tabelas usam Row Level Security (RLS) para limitar o acesso aos dados do professor autenticado. Os caminhos dos arquivos devem começar com o UUID do usuário autenticado:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```text
+<uuid-do-professor>/<uuid-da-ementa>.pdf
+<uuid-do-professor>/<uuid-da-correcao>.pdf
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Os nomes de colunas das tabelas internas do Supabase Storage, como `storage.objects.name`, permanecem conforme a API oficial do Supabase. Os uploads pelo servidor aceitam arquivos de até 25 MB; o limite de corpo das Server Actions foi ajustado para 26 MB.
+
+### Aplicar em um projeto Supabase
+
+Autentique-se, vincule o projeto remoto e aplique as migrations:
+
+```bash
+npx supabase login
+npx supabase link --project-ref <referencia-do-projeto>
+npx supabase db push
+```
+
+Para desenvolvimento local, inicie o Supabase com Docker e aplique a migration:
+
+```bash
+npx supabase start
+npx supabase migration up
+```
+
+O perfil do professor é criado automaticamente a partir do Supabase Auth. Cadastro, login, matérias, turmas, upload de ementas, tópicos, pré-promptos, rascunhos de artefatos e registros de respostas de provas usam o banco. A extração de tópicos e a geração/correção por IA ainda precisam ser implementadas; por enquanto, o material criado é salvo como rascunho.
