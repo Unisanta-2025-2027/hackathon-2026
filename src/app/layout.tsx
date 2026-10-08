@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "DocenteFlow | Planejamento inteligente",
+  title: "PréPrompto | Planejamento inteligente",
   description: "Organize e prepare materiais didáticos em um só lugar.",
 };
 
