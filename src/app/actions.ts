@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { gerarConteudoPedagogico } from "@/lib/ai/generate";
+import { extrairTopicosDaEmenta } from "@/lib/ai/extract-topics";
 import type { TipoMaterial } from "@/lib/ai/prompts";
 import mammoth from "mammoth";
 
@@ -25,6 +26,12 @@ export type SyllabusRecord = {
   titulo: string;
   nome_arquivo: string | null;
   criado_em: string;
+  situacao_extracao: "pendente" | "processando" | "concluido" | "falhou";
+  erro_extracao: string | null;
+};
+export type SyllabusUploadResult = {
+  topicosCriados: number;
+  aviso: string | null;
 };
 export type TopicRecord = {
   id: string;
@@ -88,7 +95,7 @@ export async function carregarDados(): Promise<ActionResult<AppData | null>> {
     supabase.from("professores").select("id,nome_completo").eq("id", user.id).single(),
     supabase.from("materias").select("id,nome,ano_letivo").order("nome"),
     supabase.from("turmas").select("id,materia_id,nome,turno,semestre,ano_letivo").order("nome"),
-    supabase.from("ementas").select("id,materia_id,titulo,nome_arquivo,criado_em").order("criado_em", { ascending: false }),
+    supabase.from("ementas").select("id,materia_id,titulo,nome_arquivo,criado_em,situacao_extracao,erro_extracao").order("criado_em", { ascending: false }),
     supabase.from("topicos_ementa").select("id,ementa_id,materia_id,titulo,descricao,situacao,ordem").order("ordem"),
     supabase.from("pre_promptos").select("id,nome,descricao,ativo,tipos_artefato,nome_escola,nome_professor,instrucoes_fixas,colunas_layout,layout_compacto,familia_fonte,tamanho_fonte").order("criado_em"),
     supabase.from("artefatos").select("id,titulo,tipo,situacao"),
@@ -258,12 +265,30 @@ export async function criarTurma(input: {
 const maxUploadBytes = 25 * 1024 * 1024;
 const allowedSourceTypes = new Set([
   "application/pdf",
-  "application/msword",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "text/plain",
 ]);
 
-export async function enviarEmenta(formData: FormData): Promise<ActionResult<SyllabusRecord>> {
+function mensagemErroExtracao(error: unknown) {
+  const code = error instanceof Error ? error.message : "";
+  const messages: Record<string, string> = {
+    IA_KEY_MISSING: "A chave da IA não está configurada no servidor.",
+    IA_AUTH_FAILED: "A chave da IA foi recusada. Verifique a configuração do servidor.",
+    IA_MODEL_NOT_FOUND: "O modelo de IA configurado não está disponível.",
+    IA_QUOTA_EXCEEDED: "A cota da IA foi excedida. Tente novamente mais tarde.",
+    IA_PROVIDER_UNAVAILABLE: "O serviço de IA está temporariamente indisponível. Tente novamente.",
+    IA_BAD_REQUEST: "O serviço de IA não aceitou o documento. Verifique se o arquivo está íntegro.",
+    IA_CONNECTION_FAILED: "Não foi possível conectar ao serviço de IA. Tente novamente.",
+    IA_INVALID_JSON: "A IA não retornou uma resposta estruturada válida. Tente novamente.",
+    IA_INVALID_TOPICS: "A IA não retornou tópicos em um formato válido. Tente novamente.",
+    IA_NO_TOPICS: "Não foi possível identificar tópicos programáticos nesse documento.",
+    IA_TOO_MANY_TOPICS: "O documento contém tópicos demais para uma única extração. Divida a ementa e envie novamente.",
+    IA_EMPTY_RESPONSE: "A IA não retornou conteúdo. Tente novamente.",
+  };
+  return messages[code] ?? (code || "Ocorreu um erro inesperado durante a extração.");
+}
+
+export async function enviarEmenta(formData: FormData): Promise<ActionResult<SyllabusUploadResult>> {
   const file = formData.get("arquivo");
   const subjectId = formData.get("materiaId");
   const titleValue = formData.get("titulo");
@@ -275,13 +300,12 @@ export async function enviarEmenta(formData: FormData): Promise<ActionResult<Syl
   const extension = file.name.split(".").pop()?.toLowerCase();
   const extensionTypes: Record<string, string> = {
     pdf: "application/pdf",
-    doc: "application/msword",
     docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     txt: "text/plain",
   };
   const mimeType = extensionTypes[extension ?? ""];
   if (!mimeType || !allowedSourceTypes.has(mimeType)) {
-    return { data: null, error: "Envie um arquivo PDF, DOC, DOCX ou TXT." };
+    return { data: null, error: "Envie um arquivo PDF, DOCX ou TXT." };
   }
   if (file.size > maxUploadBytes) return { data: null, error: "O arquivo deve ter no máximo 25 MB." };
   if (!Number.isInteger(academicYearValue) || academicYearValue < 2000 || academicYearValue > 2200) {
@@ -307,9 +331,11 @@ export async function enviarEmenta(formData: FormData): Promise<ActionResult<Syl
       nome_arquivo: file.name,
       tipo_mime: mimeType,
       tamanho_arquivo_bytes: file.size,
+      situacao_extracao: "processando",
+      erro_extracao: null,
       enviado_em: new Date().toISOString(),
     })
-    .select("id,materia_id,titulo,nome_arquivo,criado_em")
+    .select("id,materia_id,titulo,nome_arquivo,criado_em,situacao_extracao,erro_extracao")
     .single();
   if (error) {
     const { error: cleanupError } = await supabase.storage.from("documentos-base").remove([storagePath]);
@@ -318,47 +344,63 @@ export async function enviarEmenta(formData: FormData): Promise<ActionResult<Syl
     }
     return { data: null, error: errorMessage(error) };
   }
-  revalidatePath("/");
-  return { data, error: null };
-}
 
-export async function criarTopico(input: {
-  ementaId: string;
-  titulo: string;
-  descricao: string;
-}): Promise<ActionResult> {
-  if (!isNonEmptyString(input?.ementaId) || !isNonEmptyString(input?.titulo)) {
-    return { data: null, error: "Selecione uma ementa e informe o tópico." };
+  let extraction: Awaited<ReturnType<typeof extrairTopicosDaEmenta>>;
+  try {
+    extraction = await extrairTopicosDaEmenta(file, mimeType);
+  } catch (extractionError) {
+    const message = mensagemErroExtracao(extractionError);
+    const { error: statusError } = await supabase
+      .from("ementas")
+      .update({ situacao_extracao: "falhou", erro_extracao: message })
+      .eq("id", data.id)
+      .eq("professor_id", user.id);
+    const aviso = statusError
+      ? `${message} Além disso, não foi possível registrar a falha da extração: ${errorMessage(statusError)}`
+      : `O documento foi enviado, mas os tópicos não puderam ser extraídos: ${message}`;
+    revalidatePath("/");
+    return { data: { topicosCriados: 0, aviso }, error: null };
   }
-  const { supabase, user } = await usuarioAutenticado();
-  const { data: ementa, error: syllabusError } = await supabase
+
+  const { error: topicsError } = await supabase.from("topicos_ementa").insert(
+    extraction.topicos.map((topic, index) => ({
+      professor_id: user.id,
+      ementa_id: data.id,
+      materia_id: data.materia_id,
+      ordem: index + 1,
+      titulo: topic.titulo,
+      descricao: topic.descricao || null,
+      habilidades: topic.habilidades,
+    })),
+  );
+  if (topicsError) {
+    const message = errorMessage(topicsError);
+    const { error: statusError } = await supabase
+      .from("ementas")
+      .update({ situacao_extracao: "falhou", erro_extracao: message })
+      .eq("id", data.id)
+      .eq("professor_id", user.id);
+    const aviso = statusError
+      ? `Os tópicos foram identificados, mas não puderam ser salvos: ${message}. Também não foi possível registrar a falha: ${errorMessage(statusError)}`
+      : `Os tópicos foram identificados, mas não puderam ser salvos: ${message}`;
+    revalidatePath("/");
+    return { data: { topicosCriados: 0, aviso }, error: null };
+  }
+
+  const { error: completionError } = await supabase
     .from("ementas")
-    .select("id,materia_id")
-    .eq("id", input.ementaId)
-    .eq("professor_id", user.id)
-    .single();
-  if (syllabusError) return { data: null, error: errorMessage(syllabusError) };
-
-  const { data: lastTopic, error: orderError } = await supabase
-    .from("topicos_ementa")
-    .select("ordem")
-    .eq("ementa_id", ementa.id)
-    .order("ordem", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (orderError) return { data: null, error: errorMessage(orderError) };
-
-  const { error } = await supabase.from("topicos_ementa").insert({
-    professor_id: user.id,
-    ementa_id: ementa.id,
-    materia_id: ementa.materia_id,
-    ordem: (lastTopic?.ordem ?? 0) + 1,
-    titulo: input.titulo.trim(),
-    descricao: input.descricao.trim() || null,
-  });
-  if (error) return { data: null, error: errorMessage(error) };
+    .update({
+      situacao_extracao: "concluido",
+      erro_extracao: null,
+      texto_extraido: extraction.textoExtraido,
+    })
+    .eq("id", data.id)
+    .eq("professor_id", user.id);
+  const aviso = completionError
+    ? `Os tópicos foram gerados, mas o status da extração não pôde ser atualizado: ${errorMessage(completionError)}`
+    : null;
   revalidatePath("/");
-  return { data: undefined, error: null };
+  return { data: { topicosCriados: extraction.topicos.length, aviso }, error: null };
 }
 
 export async function atualizarSituacaoTopico(input: {
