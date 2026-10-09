@@ -37,6 +37,8 @@ import {
   criarCorrecao,
   gerarMaterialComIA,
   criarMateria,
+  atualizarMateria,
+  excluirMateria,
   salvarEstilo,
   duplicarEstilo,
   salvarCabecalho,
@@ -50,6 +52,7 @@ import {
   sair,
   type AppData,
   type MaterialGerado,
+  type SubjectWithSyllabus,
   type SyllabusRecord,
   type TemplateRecord,
   type TopicRecord,
@@ -67,6 +70,8 @@ export default function Home() {
   const [isPending, startTransition] = useTransition();
   const generationLockRef = useRef(false);
   const [selectedSubject, setSelectedSubject] = useState("");
+  const [subjectMenuOpen, setSubjectMenuOpen] = useState(false);
+  const [subjectToDelete, setSubjectToDelete] = useState<SubjectWithSyllabus | null>(null);
   const [selectedHeaderId, setSelectedHeaderId] = useState("");
   const [selectedStyleId, setSelectedStyleId] = useState("");
   const [versoesAB, setVersoesAB] = useState(true);
@@ -75,7 +80,7 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [topicsAscending, setTopicsSorted] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
-  const [managementMode, setManagementMode] = useState<"materia" | null>(null);
+  const [managementMode, setManagementMode] = useState<"create" | "edit" | null>(null);
   const [editingTopic, setEditingTopic] = useState<TopicRecord | null>(null);
   const [topicToDelete, setTopicToDelete] = useState<TopicRecord | null>(null);
   const [syllabusToDelete, setSyllabusToDelete] = useState<SyllabusRecord | null>(null);
@@ -407,22 +412,40 @@ export default function Home() {
     notify("Cabeçalho atualizado.");
   }
 
-  async function createSubjectOnly(formData: FormData) {
+  async function saveSubject(formData: FormData) {
     const name = String(formData.get("materia") ?? "").trim();
     const year = Number(formData.get("anoLetivo"));
-    if (!name || !Number.isInteger(year)) {
+    if (!name || name.length > 160 || !Number.isInteger(year) || year < 2000 || year > 2200) {
       notify("Informe o nome da matéria e um ano letivo válido.");
       return;
     }
     startTransition(async () => {
-      const result = await criarMateria({ nome: name, anoLetivo: year });
+      const result = managementMode === "edit" && subject
+        ? await atualizarMateria({ id: subject.id, nome: name, anoLetivo: year })
+        : await criarMateria({ nome: name, anoLetivo: year });
       if (result.error || !result.data) {
-        notify(result.error ?? "Não foi possível criar a matéria.");
+        notify(result.error ?? "Não foi possível salvar a matéria.");
         return;
       }
       setManagementMode(null);
       await refreshData(result.data.id);
-      notify("Matéria criada.");
+      notify(managementMode === "edit" ? "Matéria atualizada." : "Matéria criada.");
+    });
+  }
+
+  async function confirmDeleteSubject() {
+    if (!subjectToDelete) return;
+    startTransition(async () => {
+      const result = await excluirMateria(subjectToDelete.id);
+      if (result.error || !result.data) {
+        notify(result.error ?? "Não foi possível excluir a matéria.");
+        return;
+      }
+      const removedName = subjectToDelete.nome;
+      setSubjectToDelete(null);
+      setSubjectMenuOpen(false);
+      await refreshData(result.data.nextMateriaId ?? undefined);
+      notify(result.data.aviso ?? `Matéria “${removedName}” excluída.`);
     });
   }
 
@@ -502,17 +525,16 @@ export default function Home() {
   }
 
   if (!appData.materias.length) {
-    return <main className="auth-shell"><div className="auth-card onboarding-card">
+    return <>
+      <main className="auth-shell"><div className="auth-card onboarding-card subject-empty-state">
       <div className="brand"><div className="brand-mark"><GraduationCap size={19} /></div><span>Pré<span className="brand-accent">Prompto</span></span></div>
-      <span className="section-kicker">PRIMEIRO ACESSO</span><h1>Organize seu espaço de ensino</h1>
-      <p className="page-subtitle">Cadastre sua primeira matéria para o ano letivo e comece a guardar ementas, tópicos e materiais.</p>
-      <form action={createSubjectOnly} className="onboarding-form">
-        <label>Nome da matéria<input name="materia" required maxLength={160} placeholder="Ex.: Estrutura de Dados" /></label>
-        <label>Ano letivo<input name="anoLetivo" type="number" min="2000" max="2200" defaultValue={new Date().getFullYear()} required /></label>
-        <button className="button button-primary" disabled={isPending}><Plus size={15} /> Criar matéria</button>
-      </form>
+      <span className="section-kicker">SEU ESPAÇO DE ENSINO</span><h1>Nenhuma matéria cadastrada</h1>
+      <p className="page-subtitle">Cadastre uma matéria para organizar sua ementa, acompanhar os tópicos e criar materiais de aula.</p>
+      <button className="button button-primary" onClick={() => setManagementMode("create")}><Plus size={15} /> Criar matéria</button>
       <button className="auth-signout" onClick={() => void sair().then(() => window.location.reload())}>Sair da conta</button>
-    </div></main>;
+      </div></main>
+      {managementMode && <SubjectFormModal mode={managementMode} subject={subject} isPending={isPending} onClose={() => setManagementMode(null)} onSubmit={saveSubject} />}
+    </>;
   }
 
   if (!subject) {
@@ -632,6 +654,11 @@ export default function Home() {
             <span className="sr-only">Disciplina</span>
             <select value={selectedSubject} onChange={(event) => {
               const id = event.target.value;
+              if (id === "__create_subject__") {
+                setManagementMode("create");
+                return;
+              }
+              setSubjectMenuOpen(false);
               setSelectedSubject(id);
               setSyllabusUploadError("");
               setEditingHeaderId(null);
@@ -640,6 +667,7 @@ export default function Home() {
               setSelectedHeaderId(appData.prePromptos.find((item) => item.materia_id === id)?.id ?? "");
             }}>
               {appData.materias.map((item) => <option key={item.id} value={item.id}>{item.nome}</option>)}
+              <option value="__create_subject__">+ Nova matéria</option>
             </select>
             <ChevronDown size={15} />
           </label>
@@ -682,11 +710,17 @@ export default function Home() {
               <div className="page-heading">
                 <div>
                   <div className="heading-overline"><span className="heading-rule" /> SEU PLANEJAMENTO, EM UM SÓ LUGAR</div>
-                  <h1>{subject.nome}</h1>
+                  <div className="subject-title-row">
+                    <h1>{subject.nome}</h1>
+                    <div className="subject-menu-wrap">
+                      <button type="button" className="icon-button subject-menu-trigger" aria-label="Ações da matéria" aria-haspopup="menu" aria-expanded={subjectMenuOpen} onClick={() => setSubjectMenuOpen((open) => !open)}><MoreHorizontal size={19} /></button>
+                      {subjectMenuOpen && <div className="subject-menu" role="menu">
+                        <button type="button" role="menuitem" onClick={() => { setSubjectMenuOpen(false); setManagementMode("edit"); }}><Pencil size={14} /> Editar matéria</button>
+                        <button type="button" role="menuitem" className="subject-menu-danger" onClick={() => { setSubjectMenuOpen(false); setSubjectToDelete(subject); }}><Trash2 size={14} /> Excluir matéria</button>
+                      </div>}
+                    </div>
+                  </div>
                   <p className="page-subtitle">Acompanhe seu plano de ensino e transforme cada tópico em material de aula.</p>
-                </div>
-                <div className="heading-actions">
-                  <button className="button button-outline" onClick={() => setManagementMode("materia")}><Plus size={15} /> Nova matéria</button>
                 </div>
               </div>
 
@@ -925,22 +959,15 @@ export default function Home() {
           <div className="modal-footer"><button className="button button-quiet" onClick={() => setPresetToDelete(null)} disabled={isPending}>Cancelar</button><button className="button button-danger" onClick={confirmDeletePreset} disabled={isPending}><Trash2 size={15} /> {isPending ? "Excluindo…" : presetToDelete.cabecalho ? "Excluir cabeçalho" : "Excluir estilo"}</button></div>
         </section>
       </div>}
-      {managementMode && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setManagementMode(null); }}>
-        <section className="generator-modal" role="dialog" aria-modal="true" aria-labelledby="management-title">
-          <div className="modal-topline"><span className="modal-icon"><GraduationCap size={18} /></span><button className="icon-button" aria-label="Fechar" onClick={() => setManagementMode(null)}><X size={18} /></button></div>
-          <span className="section-kicker">MATÉRIA</span>
-          <>
-            <h2 id="management-title">Nova matéria</h2>
-            <p className="modal-description">Cadastre uma matéria para o ano letivo.</p>
-            <form action={createSubjectOnly} className="onboarding-form modal-form">
-              <label>Nome da matéria<input name="materia" required maxLength={160} placeholder="Ex.: Estrutura de Dados" /></label>
-              <label>Ano letivo<input name="anoLetivo" type="number" min="2000" max="2200" defaultValue={new Date().getFullYear()} required /></label>
-              <div className="modal-footer"><button type="button" className="button button-quiet" onClick={() => setManagementMode(null)}>Cancelar</button><button className="button button-primary" disabled={isPending}><Plus size={15} /> Criar matéria</button></div>
-            </form>
-          </>
-          <p className="modal-disclaimer">O cadastro é salvo na sua conta do PréPrompto.</p>
+      {subjectToDelete && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (!isPending && event.target === event.currentTarget) setSubjectToDelete(null); }}>
+        <section className="generator-modal confirm-delete-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-subject-title">
+          <div className="modal-topline"><span className="modal-icon delete-modal-icon"><Trash2 size={17} /></span><button className="icon-button" aria-label="Fechar confirmação" onClick={() => setSubjectToDelete(null)} disabled={isPending}><X size={18} /></button></div>
+          <span className="section-kicker">EXCLUIR MATÉRIA</span><h2 id="delete-subject-title">Excluir matéria?</h2>
+          <p className="modal-description">A matéria <strong>{subjectToDelete.nome}</strong> ({subjectToDelete.ano_letivo}) e todos os dados vinculados serão apagados permanentemente, incluindo ementa, tópicos, cabeçalhos e materiais gerados.</p>
+          <div className="modal-footer"><button className="button button-quiet" onClick={() => setSubjectToDelete(null)} disabled={isPending}>Cancelar</button><button className="button button-danger" onClick={confirmDeleteSubject} disabled={isPending}><Trash2 size={15} /> {isPending ? "Excluindo…" : "Excluir matéria"}</button></div>
         </section>
       </div>}
+      {managementMode && <SubjectFormModal mode={managementMode} subject={subject} isPending={isPending} onClose={() => setManagementMode(null)} onSubmit={saveSubject} />}
       {modalOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (!isGenerating && event.target === event.currentTarget) setModalOpen(false); }}>
         <section className="generator-modal" role="dialog" aria-modal="true" aria-labelledby="generator-title">
           <div className="modal-topline"><span className="modal-icon"><Sparkles size={18} /></span><button className="icon-button" aria-label={isGenerating ? "Geração em andamento" : "Fechar"} onClick={() => { if (!isGenerating) setModalOpen(false); }} disabled={isGenerating}><X size={18} /></button></div>
@@ -997,6 +1024,30 @@ export default function Home() {
       {toast && <div className="toast"><CheckCircle2 size={17} /> {toast}</div>}
     </main>
   );
+}
+
+function SubjectFormModal({ mode, subject, isPending, onClose, onSubmit }: {
+  mode: "create" | "edit";
+  subject?: Pick<SubjectWithSyllabus, "id" | "nome" | "ano_letivo">;
+  isPending: boolean;
+  onClose: () => void;
+  onSubmit: (formData: FormData) => void | Promise<void>;
+}) {
+  const year = new Date().getFullYear();
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="generator-modal" role="dialog" aria-modal="true" aria-labelledby="management-title">
+      <div className="modal-topline"><span className="modal-icon"><GraduationCap size={18} /></span><button className="icon-button" aria-label="Fechar" onClick={onClose}><X size={18} /></button></div>
+      <span className="section-kicker">MATÉRIA</span>
+      <h2 id="management-title">{mode === "edit" ? "Editar matéria" : "Nova matéria"}</h2>
+      <p className="modal-description">{mode === "edit" ? "Atualize o nome e o ano letivo desta matéria." : "Cadastre uma matéria para o ano letivo."}</p>
+      <form key={`${mode}-${subject?.id ?? "new"}`} action={onSubmit} className="onboarding-form modal-form">
+        <label>Nome da matéria<input name="materia" required maxLength={160} defaultValue={mode === "edit" ? subject?.nome ?? "" : ""} placeholder="Ex.: Estrutura de Dados" /></label>
+        <label>Ano letivo<input name="anoLetivo" type="number" min="2000" max="2200" defaultValue={mode === "edit" ? subject?.ano_letivo ?? year : year} required /></label>
+        <div className="modal-footer"><button type="button" className="button button-quiet" onClick={onClose}>Cancelar</button><button className="button button-primary" disabled={isPending}>{mode === "edit" ? <><Check size={15} /> Salvar alterações</> : <><Plus size={15} /> Criar matéria</>}</button></div>
+      </form>
+      <p className="modal-disclaimer">O cadastro é salvo na sua conta do PréPrompto.</p>
+    </section>
+  </div>;
 }
 
 function AuthScreen({ error, onLogin, onSignup }: {

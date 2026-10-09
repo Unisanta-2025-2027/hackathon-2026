@@ -12,6 +12,7 @@ export type ActionResult<T = undefined> =
   | { data: null; error: string };
 
 export type SubjectRecord = { id: string; nome: string; ano_letivo: number };
+export type SubjectDeleteResult = { nextMateriaId: string | null; aviso: string | null };
 export type SyllabusRecord = {
   id: string;
   materia_id: string;
@@ -219,7 +220,7 @@ async function usuarioAutenticado() {
 }
 
 export async function criarMateria(input: { nome: string; anoLetivo: number }): Promise<ActionResult<SubjectRecord>> {
-  if (!isNonEmptyString(input?.nome) || !Number.isInteger(input.anoLetivo) || input.anoLetivo < 2000 || input.anoLetivo > 2200) {
+  if (!isNonEmptyString(input?.nome) || input.nome.trim().length > 160 || !Number.isInteger(input.anoLetivo) || input.anoLetivo < 2000 || input.anoLetivo > 2200) {
     return { data: null, error: "Informe o nome da matéria e um ano letivo válido." };
   }
   const { supabase, user } = await usuarioAutenticado();
@@ -231,6 +232,70 @@ export async function criarMateria(input: { nome: string; anoLetivo: number }): 
   if (error) return { data: null, error: errorMessage(error) };
   revalidatePath("/");
   return { data, error: null };
+}
+
+export async function atualizarMateria(input: { id: string; nome: string; anoLetivo: number }): Promise<ActionResult<SubjectRecord>> {
+  if (!isNonEmptyString(input?.id) || !isNonEmptyString(input?.nome) || input.nome.trim().length > 160 ||
+    !Number.isInteger(input.anoLetivo) || input.anoLetivo < 2000 || input.anoLetivo > 2200) {
+    return { data: null, error: "Informe o nome da matéria e um ano letivo válido." };
+  }
+  const { supabase, user } = await usuarioAutenticado();
+  const { data, error } = await supabase
+    .from("materias")
+    .update({ nome: input.nome.trim(), ano_letivo: input.anoLetivo })
+    .eq("id", input.id)
+    .eq("professor_id", user.id)
+    .select("id,nome,ano_letivo")
+    .single();
+  if (error) return { data: null, error: errorMessage(error) };
+  revalidatePath("/");
+  return { data, error: null };
+}
+
+export async function excluirMateria(id: string): Promise<ActionResult<SubjectDeleteResult>> {
+  if (!isNonEmptyString(id)) return { data: null, error: "Selecione uma matéria válida para excluir." };
+  const { supabase, user } = await usuarioAutenticado();
+  const [subjectResult, nextSubjectResult, syllabiResult, artifactsResult] = await Promise.all([
+    supabase.from("materias").select("id").eq("id", id).eq("professor_id", user.id).single(),
+    supabase.from("materias").select("id").eq("professor_id", user.id).neq("id", id).order("nome").limit(1).maybeSingle(),
+    supabase.from("ementas").select("caminho_arquivo").eq("materia_id", id).eq("professor_id", user.id),
+    supabase.from("artefatos").select("id").eq("materia_id", id).eq("professor_id", user.id),
+  ]);
+  if (subjectResult.error) return { data: null, error: errorMessage(subjectResult.error) };
+  if (nextSubjectResult.error) return { data: null, error: errorMessage(nextSubjectResult.error) };
+  if (syllabiResult.error) return { data: null, error: errorMessage(syllabiResult.error) };
+  if (artifactsResult.error) return { data: null, error: errorMessage(artifactsResult.error) };
+  if (!subjectResult.data) return { data: null, error: "A matéria não foi encontrada ou não pertence à sua conta." };
+
+  const artifactIds = (artifactsResult.data ?? []).map((artifact) => artifact.id);
+  const correctionsResult = artifactIds.length
+    ? await supabase.from("correcoes").select("caminho_resposta").eq("professor_id", user.id).in("artefato_id", artifactIds)
+    : { data: [], error: null };
+  if (correctionsResult.error) return { data: null, error: errorMessage(correctionsResult.error) };
+
+  const { data: deleted, error: deleteError } = await supabase
+    .from("materias")
+    .delete()
+    .eq("id", id)
+    .eq("professor_id", user.id)
+    .select("id")
+    .single();
+  if (deleteError) return { data: null, error: errorMessage(deleteError) };
+  if (!deleted) return { data: null, error: "A matéria não foi excluída." };
+
+  const paths = (syllabiResult.data ?? []).flatMap((syllabus) => syllabus.caminho_arquivo ? [syllabus.caminho_arquivo] : []);
+  const responsePaths = (correctionsResult.data ?? []).flatMap((correction) => correction.caminho_resposta ? [correction.caminho_resposta] : []);
+  const avisos: string[] = [];
+  if (paths.length) {
+    const { error: storageError } = await supabase.storage.from("documentos-base").remove(paths);
+    if (storageError) avisos.push(`Os documentos-base não puderam ser totalmente removidos: ${errorMessage(storageError)}`);
+  }
+  if (responsePaths.length) {
+    const { error: storageError } = await supabase.storage.from("respostas-avaliacao").remove(responsePaths);
+    if (storageError) avisos.push(`Alguns arquivos de respostas não puderam ser removidos: ${errorMessage(storageError)}`);
+  }
+  revalidatePath("/");
+  return { data: { nextMateriaId: nextSubjectResult.data?.id ?? null, aviso: avisos.join(" ") || null }, error: null };
 }
 
 const maxUploadBytes = 25 * 1024 * 1024;
