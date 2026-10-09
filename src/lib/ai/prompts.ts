@@ -1,4 +1,10 @@
 export type TipoMaterial = "roteiro_aula" | "atividade" | "prova";
+export type ModeloPontuacao = "igualitaria" | "ponderada";
+
+export type OpcoesGeracao = {
+  versoesAB: boolean;
+  incluirGabarito: boolean;
+};
 
 export type ContextoPedagogico = {
   professor: string;
@@ -10,6 +16,8 @@ export type ContextoPedagogico = {
   documentoPdfAnexado: boolean;
   instrucoesProfessor: string;
   layout: string;
+  modeloPontuacao: ModeloPontuacao;
+  opcoes: OpcoesGeracao;
 };
 
 const orientacaoComum = `Planeje como uma professora ou um professor com décadas de experiência real em sala de aula, domínio de didática, avaliação e tecnologias educacionais. Escreva em português brasileiro claro, acolhedor, preciso e adequado para uso imediato.
@@ -114,8 +122,21 @@ Crie de 5 a 8 questões por versão, inclua itens objetivos e abertos/aplicados,
 };
 
 export function criarPromptPedagogico(tipo: TipoMaterial, contexto: ContextoPedagogico) {
+  const opcoesPrompt = tipo === "atividade"
+    ? [
+      `Pontuação total: 10 pontos. ${contexto.modeloPontuacao === "igualitaria" ? "Distribua os pontos igualmente entre as questões." : "Pondere os pontos de acordo com a complexidade das questões."}`,
+      contexto.opcoes.incluirGabarito ? "Inclua gabarito comentado, um item por questão." : "Omita completamente a propriedade gabaritoComentado.",
+      "Não gere versões A/B para atividades.",
+    ].join("\n")
+    : tipo === "prova"
+      ? [
+        `Pontuação total: 10 pontos. ${contexto.modeloPontuacao === "igualitaria" ? "Distribua os pontos igualmente entre as questões." : "Pondere os pontos de acordo com a complexidade das questões."}`,
+        contexto.opcoes.versoesAB ? "Gere versões A e B paralelas." : "Gere somente a versão A; omita a versão B.",
+        contexto.opcoes.incluirGabarito ? "Inclua gabarito comentado para as versões geradas." : "Omita completamente a propriedade gabaritoComentado.",
+      ].join("\n")
+      : "Gere somente um roteiro de aula; não inclua cabeçalho impresso, versões A/B ou gabarito de avaliação.";
   return {
     systemInstruction: orientacaoComum,
-    userPrompt: `${contextoComoTexto(contexto)}\n\nTAREFA: ${formatos[tipo]}`,
+    userPrompt: `${contextoComoTexto(contexto)}\n\nTAREFA: ${formatos[tipo]}\n\nCONFIGURAÇÕES OBRIGATÓRIAS DO MATERIAL:\n${opcoesPrompt}`,
   };
 }

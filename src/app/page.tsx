@@ -11,6 +11,7 @@ import {
   CircleHelp,
   ClipboardCheck,
   CloudUpload,
+  Copy,
   FileCheck2,
   FilePlus2,
   FileText,
@@ -31,21 +32,21 @@ import {
   X,
 } from "lucide-react";
 import {
-  alterarPrePrompto,
   carregarDados,
   cadastrar,
   criarCorrecao,
   gerarMaterialComIA,
   criarMateria,
-  criarPrePrompto,
+  salvarEstilo,
+  duplicarEstilo,
   salvarCabecalho,
   atualizarTopico,
   excluirEmenta,
   excluirTopico,
-  excluirPrePrompto,
+  excluirEstilo,
+  excluirCabecalho,
   entrar,
   enviarEmenta,
-  alterarPrePromptoConteudo,
   sair,
   type AppData,
   type MaterialGerado,
@@ -67,6 +68,9 @@ export default function Home() {
   const generationLockRef = useRef(false);
   const [selectedSubject, setSelectedSubject] = useState("");
   const [selectedHeaderId, setSelectedHeaderId] = useState("");
+  const [selectedStyleId, setSelectedStyleId] = useState("");
+  const [versoesAB, setVersoesAB] = useState(true);
+  const [incluirGabarito, setIncluirGabarito] = useState(true);
   const [filter, setFilter] = useState("Todos");
   const [query, setQuery] = useState("");
   const [topicsAscending, setTopicsSorted] = useState(true);
@@ -77,6 +81,8 @@ export default function Home() {
   const [syllabusToDelete, setSyllabusToDelete] = useState<SyllabusRecord | null>(null);
   const [presetToDelete, setPresetToDelete] = useState<{ id: string; nome: string; cabecalho: boolean } | null>(null);
   const [editingHeaderId, setEditingHeaderId] = useState<string | null>(null);
+  const [styleModalOpen, setStyleModalOpen] = useState(false);
+  const [editingStyle, setEditingStyle] = useState<TemplateRecord | null>(null);
   const [artifact, setArtifact] = useState<Artifact>("Roteiro");
   const [selectedTopicIds, setSelectedTopicIds] = useState<string[]>([]);
   const [generatedMaterial, setGeneratedMaterial] = useState<MaterialGerado | null>(null);
@@ -84,7 +90,6 @@ export default function Home() {
   const [generationError, setGenerationError] = useState("");
   const [examExportVersion, setExamExportVersion] = useState<"A" | "B">("A");
   const [toast, setToast] = useState("");
-  const [presetName, setPresetName] = useState("");
   const [formError, setFormError] = useState("");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isUploadingSyllabus, setIsUploadingSyllabus] = useState(false);
@@ -108,6 +113,13 @@ export default function Home() {
           result.data?.prePromptos.some((item) => item.id === current && item.materia_id === subjectId)
             ? current
             : result.data?.prePromptos.find((item) => item.materia_id === subjectId)?.id ?? "",
+        );
+        setSelectedStyleId((current) =>
+          result.data?.prePromptos.some((item) => item.id === current && item.materia_id === null)
+            ? current
+            : result.data?.prePromptos.find((item) => item.materia_id === null && item.nome === "Modelo Oficial Bimestral")?.id
+              ?? result.data?.prePromptos.find((item) => item.materia_id === null)?.id
+              ?? "",
         );
         setSelectedTopicIds((current) => {
           const availableTopics = result.data?.topicos.filter((topic) => topic.materia_id === subjectId) ?? [];
@@ -134,6 +146,10 @@ export default function Home() {
   );
   const activeTopic = topics.find((topic) => selectedTopicIds.includes(topic.id));
   const presets = appData?.prePromptos ?? [];
+  const globalStyles = presets.filter((preset) => preset.materia_id === null);
+  const selectedStyle = globalStyles.find((preset) => preset.id === selectedStyleId)
+    ?? globalStyles.find((preset) => preset.nome === "Modelo Oficial Bimestral")
+    ?? globalStyles[0];
   const subjectHeaders = presets.filter((preset) => preset.materia_id === selectedSubject);
   const selectedHeader = subjectHeaders.find((preset) => preset.id === selectedHeaderId)
     ?? subjectHeaders[0];
@@ -249,13 +265,16 @@ export default function Home() {
       notify("Selecione pelo menos um tópico válido da matéria.");
       return;
     }
+    if (!selectedStyle) {
+      setGenerationError("Cadastre um estilo de pré-prompto antes de gerar o material.");
+      return;
+    }
     const artifactType = artifact === "Roteiro" ? "roteiro_aula" : artifact === "Atividade" ? "atividade" : "prova";
     const requiresHeader = artifactType !== "roteiro_aula";
     if (requiresHeader && !selectedHeader) {
       setGenerationError("Cadastre e selecione um cabeçalho desta matéria antes de gerar uma atividade ou prova.");
       return;
     }
-    const activePreset = presets.find((preset) => !preset.materia_id && preset.ativo && preset.tipos_artefato.includes(artifactType));
     generationLockRef.current = true;
     setGenerationError("");
     setIsGenerating(true);
@@ -264,9 +283,10 @@ export default function Home() {
         const result = await gerarMaterialComIA({
           materiaId: subject.id,
           topicoIds: topicIds,
-          prePromptoId: activePreset?.id ?? null,
+          estiloId: selectedStyle.id,
           cabecalhoId: requiresHeader ? selectedHeader.id : null,
           tipo: artifactType,
+          opcoes: { versoesAB, incluirGabarito },
         });
         if (result.error || !result.data) {
           setGenerationError(result.error ?? "Não foi possível gerar o material. Tente novamente.");
@@ -285,50 +305,62 @@ export default function Home() {
     });
   }
 
-  async function addPreset() {
-    const name = presetName.trim();
-    if (!name) return;
-    startTransition(async () => {
-      const result = await criarPrePrompto({ nome: name });
-      if (result.error) {
-        notify(result.error);
-        return;
-      }
-      setPresetName("");
-      await refreshData(selectedSubject);
-      notify("Pré-prompto salvo no banco.");
-    });
+  function generateFromStudio() {
+    setModalOpen(true);
+    void generateArtifact();
   }
 
-  async function updatePreset(id: string, formData: FormData) {
-    const result = await alterarPrePromptoConteudo({
-      id,
+  async function saveStyle(formData: FormData) {
+    const result = await salvarEstilo({
+      id: editingStyle?.id,
       nome: String(formData.get("nome") ?? ""),
       descricao: String(formData.get("descricao") ?? ""),
       instrucoesFixas: String(formData.get("instrucoesFixas") ?? ""),
+      colunasLayout: Number(formData.get("colunasLayout")),
+      layoutCompacto: formData.get("layoutCompacto") === "on",
+      familiaFonte: String(formData.get("familiaFonte") ?? "Arial"),
+      tamanhoFonte: Number(formData.get("tamanhoFonte")),
+      modeloPontuacao: String(formData.get("modeloPontuacao")) === "ponderada" ? "ponderada" : "igualitaria",
     });
-    if (result.error) {
+    if (result.error || !result.data) {
       notify(result.error);
       return;
     }
+    setSelectedStyleId(result.data.id);
+    setEditingStyle(null);
+    setStyleModalOpen(false);
     await refreshData(selectedSubject);
-    notify("Pré-prompto atualizado.");
+    notify("Estilo de pré-prompto salvo.");
+  }
+
+  async function duplicateStyle(id: string) {
+    const result = await duplicarEstilo(id);
+    if (result.error || !result.data) {
+      notify(result.error);
+      return;
+    }
+    setSelectedStyleId(result.data.id);
+    await refreshData(selectedSubject);
+    notify("Estilo duplicado.");
   }
 
   async function confirmDeletePreset() {
     if (!presetToDelete) return;
     startTransition(async () => {
-      const result = await excluirPrePrompto(presetToDelete.id);
+      const result = presetToDelete.cabecalho
+        ? await excluirCabecalho(presetToDelete.id, selectedSubject)
+        : await excluirEstilo(presetToDelete.id);
       if (result.error) {
         notify(result.error);
         return;
       }
       if (presetToDelete.cabecalho && selectedHeaderId === presetToDelete.id) setSelectedHeaderId("");
       if (presetToDelete.cabecalho && editingHeaderId === presetToDelete.id) setEditingHeaderId(null);
+      if (!presetToDelete.cabecalho && selectedStyleId === presetToDelete.id) setSelectedStyleId("");
       const removedName = presetToDelete.nome;
       setPresetToDelete(null);
       await refreshData(selectedSubject);
-      notify(`${presetToDelete.cabecalho ? "Cabeçalho" : "Pré-prompto"} “${removedName}” excluído.`);
+      notify(`${presetToDelete.cabecalho ? "Cabeçalho" : "Estilo"} “${removedName}” excluído.`);
     });
   }
 
@@ -449,17 +481,6 @@ export default function Home() {
     });
   }
 
-  async function togglePreset(id: string, active: boolean) {
-    startTransition(async () => {
-      const result = await alterarPrePrompto({ id, ativo: active });
-      if (result.error) {
-        notify(result.error);
-        return;
-      }
-      await refreshData(selectedSubject);
-    });
-  }
-
   if (loading) {
     return <main className="auth-shell"><div className="auth-card"><span className="brand-mark"><GraduationCap size={19} /></span><p>Conectando ao PréPrompto…</p></div></main>;
   }
@@ -511,15 +532,16 @@ export default function Home() {
       delete studentContent.rubrica;
       contentForExport = studentContent;
       if (generatedMaterial.tipo === "prova") {
+        const exportVersion = generatedMaterial.opcoes.versoesAB ? examExportVersion : "A";
         const versions = generatedMaterial.conteudo.versoes;
         const selectedVersion = versions && typeof versions === "object" && !Array.isArray(versions)
-          ? (versions as Record<string, unknown>)[examExportVersion]
+          ? (versions as Record<string, unknown>)[exportVersion]
           : null;
         const versionContent = selectedVersion && typeof selectedVersion === "object" && !Array.isArray(selectedVersion)
           ? selectedVersion as Record<string, unknown>
           : null;
         if (!versionContent) {
-          notify(`A versão ${examExportVersion} da prova não está disponível.`);
+          notify(`A versão ${exportVersion} da prova não está disponível.`);
           return;
         }
         const examDetails = { ...studentContent };
@@ -527,14 +549,18 @@ export default function Home() {
         delete examDetails.matrizAvaliacao;
         contentForExport = {
           ...examDetails,
-          versao: examExportVersion,
+          versao: exportVersion,
           questoes: versionContent.questoes,
         };
-        title = `${title} — Versão ${examExportVersion}`;
+        title = generatedMaterial.opcoes.versoesAB ? `${title} — Versão ${exportVersion}` : title;
       }
     }
     const paragraphs = flattenMaterial(contentForExport);
     const filename = title.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-").replaceAll(/^-|-$/g, "");
+    const fontFamily = generatedMaterial.estilo.familiaFonte.replaceAll(/[^a-zA-Z0-9 -]/g, "") || "Arial";
+    const fontSize = Math.min(36, Math.max(6, generatedMaterial.estilo.tamanhoFonte));
+    const columnCount = generatedMaterial.estilo.colunas === 2 ? 2 : 1;
+    const lineHeight = generatedMaterial.estilo.compacto ? "1.3" : "1.55";
     const headerRows = [
       ...(generatedMaterial.tipo === "roteiro_aula" ? [] : [
         ["Instituição", generatedMaterial.cabecalho.instituicao || "________________________________"],
@@ -560,19 +586,21 @@ export default function Home() {
       const header = headerRows.length ? `<header class="school-header">${headerRows.map(([label, value]) =>
         `<div class="header-field"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</div>`,
       ).join("")}</header>` : "";
-      printWindow.document.write(`<html lang="pt-BR"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font:14px Arial,sans-serif;color:#24242a;max-width:760px;margin:48px auto;line-height:1.55}.school-header{border:1px solid #777;padding:14px 16px;margin-bottom:22px}.header-field{min-height:23px}h1{font-size:23px;margin:20px 0 6px}h2{font-size:15px;margin-top:25px;color:#5146ac}p{margin:8px 0}.questions{columns:2;column-gap:28px}@media print{body{margin:20mm auto}}</style></head><body>${header}<h1>${escapeHtml(title)}</h1><div class="questions">${body}</div><script>window.onload=()=>window.print()</script></body></html>`);
+      printWindow.document.write(`<html lang="pt-BR"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font:${fontSize}pt "${fontFamily}",serif;color:#24242a;max-width:760px;margin:48px auto;line-height:${lineHeight}}.school-header{border:1px solid #777;padding:${generatedMaterial.estilo.compacto ? "9px 12px" : "14px 16px"};margin-bottom:22px}.header-field{min-height:23px}h1{font-size:1.65em;margin:20px 0 6px}h2{font-size:1.1em;margin-top:25px;color:#5146ac}p{margin:8px 0}.questions{column-count:${columnCount};column-gap:28px}@media print{body{margin:20mm auto}}</style></head><body>${header}<h1>${escapeHtml(title)}</h1><div class="questions">${body}</div><script>window.onload=()=>window.print()</script></body></html>`);
       printWindow.document.close();
       notify("Visualização pronta. Escolha “Salvar como PDF” na janela de impressão.");
       return;
     }
 
     const xmlEscape = (value: string) => escapeHtml(value).replaceAll("&apos;", "&apos;");
+    const docxFont = xmlEscape(fontFamily);
+    const runStyle = `<w:rPr><w:rFonts w:ascii="${docxFont}" w:hAnsi="${docxFont}"/><w:sz w:val="${Math.round(fontSize * 2)}"/></w:rPr>`;
     const documentParagraphs = [
-      ...headerRows.map(([label, value]) => `<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>${xmlEscape(label)}: </w:t></w:r><w:r><w:t xml:space="preserve">${xmlEscape(value)}</w:t></w:r></w:p>`),
+      ...headerRows.map(([label, value]) => `<w:p><w:r><w:rPr><w:b/><w:rFonts w:ascii="${docxFont}" w:hAnsi="${docxFont}"/><w:sz w:val="${Math.round(fontSize * 2)}"/></w:rPr><w:t>${xmlEscape(label)}: </w:t></w:r><w:r>${runStyle}<w:t xml:space="preserve">${xmlEscape(value)}</w:t></w:r></w:p>`),
       `<w:p/>`,
-      `<w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>${xmlEscape(title)}</w:t></w:r></w:p>`,
-      ...paragraphs.map((paragraph) => `<w:p>${paragraph.heading ? `<w:pPr><w:pStyle w:val="Heading2"/></w:pPr>` : ""}<w:r><w:t xml:space="preserve">${xmlEscape(paragraph.text)}</w:t></w:r></w:p>`),
-      `<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720"/></w:sectPr>`,
+      `<w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r>${runStyle}<w:t>${xmlEscape(title)}</w:t></w:r></w:p>`,
+      ...paragraphs.map((paragraph) => `<w:p>${paragraph.heading ? `<w:pPr><w:pStyle w:val="Heading2"/></w:pPr>` : ""}<w:r>${runStyle}<w:t xml:space="preserve">${xmlEscape(paragraph.text)}</w:t></w:r></w:p>`),
+      `<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="${generatedMaterial.estilo.compacto ? 540 : 720}" w:right="720" w:bottom="${generatedMaterial.estilo.compacto ? 540 : 720}" w:left="720"/><w:cols w:num="${columnCount}"/></w:sectPr>`,
     ].join("");
     const docxBytes = createZip([
       { name: "[Content_Types].xml", content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>` },
@@ -744,7 +772,7 @@ export default function Home() {
               syllabusExtractionError={syllabusExtractionError}
               fileInputRef={fileInputRef}
               onFile={handleFile}
-              onGenerate={openGenerator}
+              onGenerate={generateFromStudio}
               onOpenPresets={() => setScreen("presets")}
               onExport={exportDocument}
               provas={appData.provas}
@@ -752,6 +780,16 @@ export default function Home() {
               selectedHeaderId={selectedHeader?.id ?? ""}
               hasSelectedHeader={Boolean(selectedHeader)}
               onSelectHeader={setSelectedHeaderId}
+              artifact={artifact}
+              onSelectArtifact={setArtifact}
+              stylePresets={globalStyles}
+              selectedStyleId={selectedStyle?.id ?? ""}
+              hasSelectedStyle={Boolean(selectedStyle)}
+              onSelectStyle={setSelectedStyleId}
+              versoesAB={versoesAB}
+              onVersoesABChange={setVersoesAB}
+              incluirGabarito={incluirGabarito}
+              onIncluirGabaritoChange={setIncluirGabarito}
             />
           )}
 
@@ -759,35 +797,29 @@ export default function Home() {
             <section className="presets-page">
               <div className="page-heading">
                 <div><div className="heading-overline"><span className="heading-rule" /> SEU JEITO DE ENSINAR</div><h1>Pré-promptos</h1><p className="page-subtitle">Salve suas preferências uma vez. Seus próximos materiais já começam do seu jeito.</p></div>
-                <span className="saved-count"><Check size={15} /> {presets.filter((preset) => !preset.materia_id && preset.ativo).length} pré-promptos ativos</span>
+                <span className="saved-count"><Check size={15} /> {globalStyles.length} estilos da conta</span>
               </div>
-              <div className="preset-intro">
-                <div className="preset-intro-icon"><Settings2 size={20} /></div>
-                <div><h2>Seus padrões, sempre à mão</h2><p>Ative ou desative as preferências que devem ser aplicadas aos materiais gerados.</p></div>
-                <span className="intro-decoration"><Sparkles size={42} /></span>
-              </div>
-              <div className="preset-list">
-                {presets.filter((preset) => !preset.materia_id).map((preset, index) => {
-                  const PresetIcon = [FileText, BookOpen, ClipboardCheck][index % 3];
-                  return <article className="preset-card" key={preset.id}>
-                    <div className="preset-card-heading">
-                      <div className="preset-card-icon"><PresetIcon size={19} /></div>
-                      <div className="preset-card-copy"><h3>{preset.nome}</h3><p>{preset.descricao || "Padrão personalizado para seus materiais"}</p><span className="preset-tag">APLICADO A ROTEIROS, ATIVIDADES E PROVAS</span></div>
-                      <button className={`toggle ${preset.ativo ? "toggle-on" : ""}`} role="switch" aria-checked={preset.ativo} aria-label={`Ativar ${preset.nome}`} onClick={() => togglePreset(preset.id, !preset.ativo)} disabled={isPending}><span /></button>
-                    </div>
-                    <form action={async (formData) => updatePreset(preset.id, formData)} className="preset-edit-form">
-                      <label>Nome<input name="nome" defaultValue={preset.nome} maxLength={120} required /></label>
-                      <label>Descrição<input name="descricao" defaultValue={preset.descricao ?? ""} maxLength={500} /></label>
-                      <label>Instruções fixas<textarea name="instrucoesFixas" rows={3} defaultValue={preset.instrucoes_fixas ?? ""} maxLength={4000} placeholder="Preferências que a IA deve seguir ao gerar os materiais" /></label>
-                      <div className="preset-edit-actions"><button className="button button-outline button-small" disabled={isPending}><Check size={14} /> Salvar alterações</button><button type="button" className="button button-danger-outline button-small" onClick={() => setPresetToDelete({ id: preset.id, nome: preset.nome, cabecalho: false })}><Trash2 size={14} /> Excluir</button></div>
-                    </form>
-                  </article>;
-                })}
-              </div>
-              <div className="add-preset-card">
-                <div className="add-preset-copy"><h3>Crie seu próprio padrão</h3><p>Adicione uma regra que você costuma repetir ao preparar seus materiais.</p></div>
-                <div className="add-preset-form"><input value={presetName} onChange={(event) => setPresetName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") addPreset(); }} placeholder="Ex.: Questões no estilo ENADE" /><button className="button button-primary" onClick={addPreset} disabled={isPending}><Plus size={15} /> Salvar padrão</button></div>
-              </div>
+              <section className="style-presets-section">
+                <div className="style-presets-heading"><div><span className="section-kicker">PREFERÊNCIAS DA CONTA</span><h2>Estilos de Pré-prompto</h2><p>Defina diagramação, tipografia e critérios de pontuação para cada material.</p></div></div>
+                <div className="style-preset-grid">
+                  {globalStyles.map((style) => (
+                    <article className="style-preset-card" key={style.id}>
+                      <div className="style-preset-card-top"><span className="style-preset-icon"><FileText size={17} /></span><span className="style-preset-columns">{style.colunas_layout} {style.colunas_layout === 1 ? "coluna" : "colunas"}</span></div>
+                      <h3>{style.nome}</h3>
+                      <p>{style.descricao}</p>
+                      <div className="style-preset-specs"><span>{style.familia_fonte} · {style.tamanho_fonte} pt</span><span>{style.modelo_pontuacao === "igualitaria" ? "Igualitária · 10 pts" : "Ponderada por questão"}</span></div>
+                      <div className="style-preset-actions">
+                        <button type="button" className="button button-outline button-small" onClick={() => { setEditingStyle(style); setStyleModalOpen(true); }}><Pencil size={13} /> Editar</button>
+                        <button type="button" className="button button-outline button-small" onClick={() => void duplicateStyle(style.id)} disabled={isPending}><Copy size={13} /> Duplicar</button>
+                        <button type="button" className="icon-button style-delete-button" aria-label={`Excluir ${style.nome}`} title="Excluir" onClick={() => setPresetToDelete({ id: style.id, nome: style.nome, cabecalho: false })}><Trash2 size={15} /></button>
+                      </div>
+                    </article>
+                  ))}
+                  <button type="button" className="style-preset-create" onClick={() => { setEditingStyle(null); setStyleModalOpen(true); }}>
+                    <span><Plus size={19} /></span><strong>Criar Novo Pré-prompto</strong><small>Monte um estilo para sua conta</small>
+                  </button>
+                </div>
+              </section>
               <section className="header-presets">
                 <div className="header-presets-heading">
                   <div><span className="section-kicker">PADRÕES POR MATÉRIA</span><h2>Cabeçalhos fixos</h2></div>
@@ -832,12 +864,31 @@ export default function Home() {
                   <p>Nome do aluno e data permanecem em branco para preenchimento manual na aplicação da atividade ou prova.</p>
                 </form>
               </section>
-              <div className="preset-footnote"><FileCheck2 size={15} /> Os pré-promptos ativos serão aplicados automaticamente; cabeçalhos são escolhidos por material.</div>
+              <div className="preset-footnote"><FileCheck2 size={15} /> Estilos de diagramação são globais à conta; cabeçalhos são específicos da matéria.</div>
             </section>
           )}
         </div>
       </section>
 
+      {styleModalOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) { setStyleModalOpen(false); setEditingStyle(null); } }}>
+        <section className="generator-modal style-editor-modal" role="dialog" aria-modal="true" aria-labelledby="style-editor-title">
+          <div className="modal-topline"><span className="modal-icon"><Settings2 size={18} /></span><button className="icon-button" aria-label="Fechar editor de estilo" onClick={() => { setStyleModalOpen(false); setEditingStyle(null); }}><X size={18} /></button></div>
+          <span className="section-kicker">ESTILOS DA CONTA</span><h2 id="style-editor-title">{editingStyle ? "Editar estilo" : "Criar novo pré-prompto"}</h2>
+          <form action={saveStyle} className="onboarding-form modal-form">
+            <label>Nome do estilo<input name="nome" required maxLength={120} defaultValue={editingStyle?.nome ?? ""} placeholder="Ex.: Avaliação semestral" /></label>
+            <label>Descrição<input name="descricao" maxLength={500} defaultValue={editingStyle?.descricao ?? ""} placeholder="Resumo da diagramação e pontuação" /></label>
+            <div className="style-editor-grid">
+              <label>Colunas<select name="colunasLayout" defaultValue={editingStyle?.colunas_layout ?? 2}><option value={1}>1 coluna</option><option value={2}>2 colunas</option></select></label>
+              <label>Fonte<select name="familiaFonte" defaultValue={editingStyle?.familia_fonte ?? "Times New Roman"}><option>Times New Roman</option><option>Arial</option><option>Calibri</option><option>Georgia</option><option>Verdana</option></select></label>
+              <label>Tamanho da fonte (pt)<input name="tamanhoFonte" type="number" min={6} max={36} step={0.5} required defaultValue={editingStyle?.tamanho_fonte ?? 11} /></label>
+              <label>Modelo de pontuação<select name="modeloPontuacao" defaultValue={editingStyle?.modelo_pontuacao ?? "igualitaria"}><option value="igualitaria">Igualitária · 10 pts</option><option value="ponderada">Ponderada por questão</option></select></label>
+            </div>
+            <label className="style-compact-toggle"><input type="checkbox" name="layoutCompacto" defaultChecked={editingStyle?.layout_compacto ?? true} /> Diagramação compacta</label>
+            <label>Instruções adicionais<textarea name="instrucoesFixas" rows={3} maxLength={4000} defaultValue={editingStyle?.instrucoes_fixas ?? ""} placeholder="Regras adicionais para a elaboração do material" /></label>
+            <div className="modal-footer"><button type="button" className="button button-quiet" onClick={() => { setStyleModalOpen(false); setEditingStyle(null); }}>Cancelar</button><button className="button button-primary" disabled={isPending}><Check size={15} /> {isPending ? "Salvando…" : "Salvar pré-prompto"}</button></div>
+          </form>
+        </section>
+      </div>}
       {editingTopic && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (!isPending && event.target === event.currentTarget) setEditingTopic(null); }}>
         <section className="generator-modal" role="dialog" aria-modal="true" aria-labelledby="edit-topic-title">
           <div className="modal-topline"><span className="modal-icon"><Pencil size={17} /></span><button className="icon-button" aria-label="Fechar edição" onClick={() => setEditingTopic(null)} disabled={isPending}><X size={18} /></button></div>
@@ -869,9 +920,9 @@ export default function Home() {
       {presetToDelete && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (!isPending && event.target === event.currentTarget) setPresetToDelete(null); }}>
         <section className="generator-modal confirm-delete-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-preset-title">
           <div className="modal-topline"><span className="modal-icon delete-modal-icon"><Trash2 size={17} /></span><button className="icon-button" aria-label="Fechar confirmação" onClick={() => setPresetToDelete(null)} disabled={isPending}><X size={18} /></button></div>
-          <span className="section-kicker">EXCLUIR PADRÃO</span><h2 id="delete-preset-title">Excluir {presetToDelete.cabecalho ? "cabeçalho fixo" : "pré-prompto"}?</h2>
+          <span className="section-kicker">EXCLUIR PADRÃO</span><h2 id="delete-preset-title">Excluir {presetToDelete.cabecalho ? "cabeçalho fixo" : "estilo de pré-prompto"}?</h2>
           <p className="modal-description">O padrão <strong>{presetToDelete.nome}</strong> será excluído. Os materiais já gerados continuarão salvos com a cópia das preferências usada na geração.</p>
-          <div className="modal-footer"><button className="button button-quiet" onClick={() => setPresetToDelete(null)} disabled={isPending}>Cancelar</button><button className="button button-danger" onClick={confirmDeletePreset} disabled={isPending}><Trash2 size={15} /> {isPending ? "Excluindo…" : "Excluir padrão"}</button></div>
+          <div className="modal-footer"><button className="button button-quiet" onClick={() => setPresetToDelete(null)} disabled={isPending}>Cancelar</button><button className="button button-danger" onClick={confirmDeletePreset} disabled={isPending}><Trash2 size={15} /> {isPending ? "Excluindo…" : presetToDelete.cabecalho ? "Excluir cabeçalho" : "Excluir estilo"}</button></div>
         </section>
       </div>}
       {managementMode && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setManagementMode(null); }}>
@@ -899,10 +950,14 @@ export default function Home() {
               {(["Roteiro", "Atividade", "Prova"] as Artifact[]).map((option) => <button key={option} className={`artifact-option ${artifact === option ? "artifact-selected" : ""}`} onClick={() => setArtifact(option)}><span className="artifact-option-icon">{option === "Roteiro" ? <BookOpen size={18} /> : option === "Atividade" ? <FilePlus2 size={18} /> : <ClipboardCheck size={18} />}</span><span><strong>{option}</strong><small>{option === "Roteiro" ? "Plano de aula estruturado" : option === "Atividade" ? "Exercícios para praticar" : "Avaliação com gabarito"}</small></span>{artifact === option && <CheckCircle2 size={17} className="selected-check" />}</button>)}
             </div>
             <TopicSelectionList topics={topics} selectedTopicIds={selectedTopicIds} onSelectedTopics={setSelectedTopicIds} disabled={isGenerating} />
+            <label className="form-label">ESTILO DE PRÉ-PROMPTO<select required value={selectedStyle?.id ?? ""} onChange={(event) => setSelectedStyleId(event.target.value)}><option value="">Selecione um estilo</option>{globalStyles.map((style) => <option key={style.id} value={style.id}>{style.nome}</option>)}</select><ChevronDown size={15} /></label>
+            {!selectedStyle && <small className="header-select-hint">Cadastre um estilo de pré-prompto nas configurações.</small>}
+            {artifact === "Prova" && <OptionSwitch label="Gerar Versões A/B (Anti-cola)" checked={versoesAB} onChange={setVersoesAB} />}
+            {artifact !== "Roteiro" && <OptionSwitch label={artifact === "Prova" ? "Incluir gabarito comentado" : "Incluir gabarito"} checked={incluirGabarito} onChange={setIncluirGabarito} />}
             {artifact === "Roteiro" ? <p className="header-not-required">Roteiros de aula não utilizam cabeçalho.</p> : <div className="generator-header-setting"><label className="form-label">CABEÇALHO<select required value={selectedHeader?.id ?? ""} onChange={(event) => setSelectedHeaderId(event.target.value)}><option value="">Selecione um cabeçalho</option>{subjectHeaders.map((item) => <option key={item.id} value={item.id}>{item.nome}{item.nome_escola ? ` · ${item.nome_escola}` : ""}</option>)}</select><ChevronDown size={15} /></label>{!subjectHeaders.length && <small className="header-select-hint">Cadastre um cabeçalho em Pré-promptos para continuar.</small>}</div>}
-            <div className="modal-template"><div><span className="template-icon"><FileText size={16} /></span><span><strong>Padrões selecionados</strong><small>{presets.filter((preset) => !preset.materia_id && preset.ativo).length} preferências serão aplicadas</small></span></div><button onClick={() => { setModalOpen(false); setScreen("presets"); }}>Editar</button></div>
+            <div className="modal-template"><div><span className="template-icon"><FileText size={16} /></span><span><strong>{selectedStyle?.nome ?? "Estilo não selecionado"}</strong><small>{selectedStyle ? `${selectedStyle.colunas_layout} coluna(s) · ${selectedStyle.familia_fonte} · ${selectedStyle.modelo_pontuacao === "igualitaria" ? "10 pontos igualitários" : "pontuação ponderada"}` : "Selecione um estilo da conta"}</small></span></div><button onClick={() => { setModalOpen(false); setScreen("presets"); }}>Editar</button></div>
             {generationError && <p className="generation-error" role="alert">{generationError}</p>}
-            <div className="modal-footer"><button className="button button-quiet" onClick={() => setModalOpen(false)} disabled={isPending}>Cancelar</button><button className="button button-primary" onClick={generateArtifact} disabled={isPending || (artifact !== "Roteiro" && !selectedHeader)}><Sparkles size={15} /> {isPending ? "Preparando…" : "Gerar material"}</button></div>
+            <div className="modal-footer"><button className="button button-quiet" onClick={() => setModalOpen(false)} disabled={isPending}>Cancelar</button><button className="button button-primary" onClick={generateArtifact} disabled={isPending || !selectedStyle || (artifact !== "Roteiro" && !selectedHeader)}><Sparkles size={15} /> {isPending ? "Preparando…" : "Gerar material"}</button></div>
             <p className="modal-disclaimer">O conteúdo gerado será salvo no seu histórico e poderá ser exportado em PDF ou DOCX.</p>
           </> : <div className="generation-panel" aria-live="polite">
             <span className="section-kicker">GERAÇÃO EM ANDAMENTO</span>
@@ -926,14 +981,14 @@ export default function Home() {
           <div className="modal-topline"><span className="modal-icon"><CheckCircle2 size={18} /></span><button className="icon-button" aria-label="Fechar material" onClick={() => setGeneratedMaterial(null)}><X size={18} /></button></div>
           <span className="section-kicker">MATERIAL GERADO E SALVO</span>
           <h2 id="generated-title">{generatedMaterial.titulo}</h2>
-          {(generatedMaterial.tipo === "prova" || generatedMaterial.tipo === "atividade") && <p className="teacher-key-notice">Gabarito e critérios aparecem somente nesta prévia. A exportação padrão é a versão do estudante.</p>}
-          {generatedMaterial.tipo === "prova" && <label className="exam-version-select">VERSÃO PARA EXPORTAR<select value={examExportVersion} onChange={(event) => setExamExportVersion(event.target.value as "A" | "B")}><option value="A">Versão A — estudante</option><option value="B">Versão B — estudante</option></select></label>}
+          {generatedMaterial.opcoes.incluirGabarito && (generatedMaterial.tipo === "prova" || generatedMaterial.tipo === "atividade") && <p className="teacher-key-notice">Gabarito e critérios aparecem somente nesta prévia. A exportação padrão é a versão do estudante.</p>}
+          {generatedMaterial.tipo === "prova" && generatedMaterial.opcoes.versoesAB && <label className="exam-version-select">VERSÃO PARA EXPORTAR<select value={examExportVersion} onChange={(event) => setExamExportVersion(event.target.value as "A" | "B")}><option value="A">Versão A — estudante</option><option value="B">Versão B — estudante</option></select></label>}
           <div className="generated-preview">{Object.entries(generatedMaterial.conteudo).map(([key, value]) =>
             <GeneratedSection key={key} name={key} value={value} />,
           )}</div>
           <div className="modal-footer">
             <button className="button button-quiet" onClick={() => setGeneratedMaterial(null)}>Fechar</button>
-            {(generatedMaterial.tipo === "prova" || generatedMaterial.tipo === "atividade") && <button className="button button-outline" onClick={() => exportDocument("DOCX", true)}><FileCheck2 size={15} /> DOCX professor</button>}
+            {generatedMaterial.opcoes.incluirGabarito && (generatedMaterial.tipo === "prova" || generatedMaterial.tipo === "atividade") && <button className="button button-outline" onClick={() => exportDocument("DOCX", true)}><FileCheck2 size={15} /> DOCX professor</button>}
             <button className="button button-outline" onClick={() => exportDocument("DOCX")}><FileCheck2 size={15} /> DOCX aluno</button>
             <button className="button button-primary" onClick={() => exportDocument("PDF")}><FileText size={15} /> PDF aluno</button>
           </div>
@@ -1006,6 +1061,14 @@ function Metric({ icon, value, label, accent }: { icon: React.ReactNode; value: 
 
 function StatusPill({ status }: { status: Progress }) {
   return <span className={`status-pill ${status === "Feito" ? "status-done" : status === "Pendente" ? "status-pending" : "status-idle"}`}>{status === "Feito" && <Check size={10} />}{status}</span>;
+}
+
+function OptionSwitch({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
+  return <label className="option-switch">
+    <span>{label}</span>
+    <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+    <span className="option-switch-track" aria-hidden="true"><span /></span>
+  </label>;
 }
 
 function escapeHtml(value: string) {
@@ -1157,7 +1220,7 @@ function TopicSelectionList({ topics, selectedTopicIds, onSelectedTopics, disabl
   </fieldset>;
 }
 
-function StudioScreen({ topics, selectedTopics, selectedTopicIds, onSelectedTopics, uploadedFile, isUploadingSyllabus, syllabusExtractionError, fileInputRef, onFile, onGenerate, onOpenPresets, onExport, provas, headerPresets, selectedHeaderId, hasSelectedHeader, onSelectHeader }: {
+function StudioScreen({ topics, selectedTopics, selectedTopicIds, onSelectedTopics, uploadedFile, isUploadingSyllabus, syllabusExtractionError, fileInputRef, onFile, onGenerate, onOpenPresets, onExport, provas, headerPresets, selectedHeaderId, hasSelectedHeader, onSelectHeader, artifact, onSelectArtifact, stylePresets, selectedStyleId, hasSelectedStyle, onSelectStyle, versoesAB, onVersoesABChange, incluirGabarito, onIncluirGabaritoChange }: {
   topics: TopicRecord[];
   selectedTopics: TopicRecord[];
   selectedTopicIds: string[];
@@ -1168,15 +1231,24 @@ function StudioScreen({ topics, selectedTopics, selectedTopicIds, onSelectedTopi
   provas: AppData["provas"];
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   onFile: (event: ChangeEvent<HTMLInputElement>) => void;
-  onGenerate: (topicIds: string[], artifact?: Artifact) => void;
+  onGenerate: () => void;
   onOpenPresets: () => void;
   onExport: (format: "PDF" | "DOCX", includeTeacherNotes?: boolean) => void;
   headerPresets: TemplateRecord[];
   selectedHeaderId: string;
   hasSelectedHeader: boolean;
   onSelectHeader: (id: string) => void;
+  artifact: Artifact;
+  onSelectArtifact: (artifact: Artifact) => void;
+  stylePresets: TemplateRecord[];
+  selectedStyleId: string;
+  hasSelectedStyle: boolean;
+  onSelectStyle: (id: string) => void;
+  versoesAB: boolean;
+  onVersoesABChange: (value: boolean) => void;
+  incluirGabarito: boolean;
+  onIncluirGabaritoChange: (value: boolean) => void;
 }) {
-  const [selectedType, setSelectedType] = useState<Artifact>("Roteiro");
   const [correctionOpen, setCorrectionOpen] = useState(false);
   const [correctionTopic, setCorrectionTopic] = useState("");
   const [correctionMessage, setCorrectionMessage] = useState("");
@@ -1191,21 +1263,40 @@ function StudioScreen({ topics, selectedTopics, selectedTopicIds, onSelectedTopi
   }
 
   return <section className="studio-page">
-    <div className="page-heading"><div><div className="heading-overline"><span className="heading-rule" /> DO CONTEÚDO AO MATERIAL</div><h1>Esteira de criação</h1><p className="page-subtitle">Monte materiais no seu formato, sem começar do zero.</p></div><span className="studio-step"><span>1</span> Escolha <i /> <span>2</span> Personalize <i /> <span>3</span> Exporte</span></div>
+    <div className="page-heading"><div><div className="heading-overline"><span className="heading-rule" /> DO CONTEÚDO AO MATERIAL</div><h1>Esteira de criação</h1><p className="page-subtitle">Monte materiais no seu formato, sem começar do zero.</p></div><span className="studio-step"><span>1</span> Artefato <i /> <span>2</span> Conteúdo <i /> <span>3</span> Estilo <i /> <span>4</span> Opções</span></div>
     <div className="studio-layout">
       <div className="studio-main">
         <div className="studio-card source-card">
-          <div className="card-title-row"><div className="number-badge">01</div><div><span className="section-kicker">FONTE DE CONTEÚDO</span><h2>Comece pelo seu documento</h2></div><span className="ready-tag">{uploadedFile ? <><Check size={12} /> Documento pronto</> : "Documento opcional"}</span></div>
+          <div className="card-title-row"><div><span className="section-kicker">FONTE DE CONTEÚDO</span><h2>Comece pelo seu documento</h2></div><span className="ready-tag">{uploadedFile ? <><Check size={12} /> Documento pronto</> : "Documento opcional"}</span></div>
           <div className="source-file"><span className="source-file-icon"><FileText size={19} /></span><div><strong>{uploadedFile || "Nenhum documento selecionado"}</strong><span>{isUploadingSyllabus ? "Enviando e extraindo tópicos com IA…" : syllabusExtractionError ?? (uploadedFile ? "Documento-base · PDF / DOCX / TXT" : "Adicione a ementa ou o conteúdo da aula")}</span></div><button className="button button-outline button-small" onClick={() => fileInputRef.current?.click()} disabled={isUploadingSyllabus}><Upload size={14} /> {isUploadingSyllabus ? "Processando…" : "Trocar arquivo"}</button></div>
           <input ref={fileInputRef} type="file" accept=".pdf,.docx,.txt" className="sr-only" onChange={onFile} disabled={isUploadingSyllabus} />
         </div>
 
         <div className="studio-card create-card">
-          <div className="card-title-row"><div className="number-badge">02</div><div><span className="section-kicker">NOVO MATERIAL</span><h2>O que você quer criar?</h2></div></div>
-          <div className="create-type-grid">{(["Roteiro", "Atividade", "Prova"] as Artifact[]).map((type) => <button key={type} className={`create-type ${selectedType === type ? "create-type-active" : ""}`} onClick={() => setSelectedType(type)}><span className="create-type-icon">{type === "Roteiro" ? <BookOpen size={20} /> : type === "Atividade" ? <FilePlus2 size={20} /> : <ClipboardCheck size={20} />}</span><strong>{type}</strong><span>{type === "Roteiro" ? "Plano de aula completo" : type === "Atividade" ? "Prática para a turma" : "Avaliação e gabarito"}</span>{selectedType === type && <CheckCircle2 size={16} className="type-check" />}</button>)}</div>
-          <div className="studio-topic-layout"><TopicSelectionList topics={topics} selectedTopicIds={selectedTopicIds} onSelectedTopics={onSelectedTopics} disabled={topics.length === 0} /></div>
-          <div className="presets-applied"><span className="applied-icon"><Settings2 size={15} /></span><span><strong>Seus pré-promptos ativos</strong><small>Preferências aplicáveis incorporadas ao material</small></span><button onClick={onOpenPresets}>Ver padrões <ArrowRight size={13} /></button></div>
-          <div className="studio-submit"><span><Sparkles size={15} /> Plano pedagógico pronto em poucos segundos</span><button className="button button-primary" onClick={() => onGenerate(selectedTopicIds, selectedType)} disabled={!selectedTopicIds.length || (selectedType !== "Roteiro" && !hasSelectedHeader)}><Sparkles size={16} /> Gerar {selectedType.toLowerCase()} <ArrowRight size={15} /></button></div>
+          <div className="card-title-row"><div><span className="section-kicker">NOVO MATERIAL</span><h2>Configure a criação</h2></div></div>
+          <section className="creation-step">
+            <div className="creation-step-heading"><span>1</span><strong>Artefato</strong></div>
+            <div className="create-type-grid">{(["Roteiro", "Atividade", "Prova"] as Artifact[]).map((type) => <button type="button" key={type} className={`create-type ${artifact === type ? "create-type-active" : ""}`} onClick={() => onSelectArtifact(type)}><span className="create-type-icon">{type === "Roteiro" ? <BookOpen size={20} /> : type === "Atividade" ? <FilePlus2 size={20} /> : <ClipboardCheck size={20} />}</span><strong>{type}</strong><span>{type === "Roteiro" ? "Plano de aula completo" : type === "Atividade" ? "Prática para a turma" : "Avaliação e gabarito"}</span>{artifact === type && <CheckCircle2 size={16} className="type-check" />}</button>)}</div>
+          </section>
+          <section className="creation-step">
+            <div className="creation-step-heading"><span>2</span><strong>Conteúdo</strong></div>
+            <TopicSelectionList topics={topics} selectedTopicIds={selectedTopicIds} onSelectedTopics={onSelectedTopics} disabled={topics.length === 0} />
+          </section>
+          <section className="creation-step">
+            <div className="creation-step-heading"><span>3</span><strong>Pré-prompto</strong></div>
+            <label className="form-label">ESTILO DE PRÉ-PROMPTO<select required value={selectedStyleId} onChange={(event) => onSelectStyle(event.target.value)}><option value="">Selecione um estilo</option>{stylePresets.map((style) => <option key={style.id} value={style.id}>{style.nome}</option>)}</select><ChevronDown size={15} /></label>
+            {!hasSelectedStyle && <small className="header-select-hint">Crie um estilo de pré-prompto nas configurações para continuar.</small>}
+          </section>
+          <section className="creation-step">
+            <div className="creation-step-heading"><span>4</span><strong>Opções avançadas</strong></div>
+            <div className="advanced-options">
+              {artifact === "Prova" && <OptionSwitch label="Gerar Versões A/B (Anti-cola)" checked={versoesAB} onChange={onVersoesABChange} />}
+              {artifact !== "Roteiro" && <OptionSwitch label={artifact === "Prova" ? "Incluir gabarito comentado" : "Incluir gabarito"} checked={incluirGabarito} onChange={onIncluirGabaritoChange} />}
+            </div>
+            {artifact === "Roteiro" ? <p className="header-not-required">Roteiros de aula não utilizam cabeçalho impresso.</p> : <label className="form-label">CABEÇALHO DA MATÉRIA<select required value={selectedHeaderId} onChange={(event) => onSelectHeader(event.target.value)}><option value="">Selecione um cabeçalho</option>{headerPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.nome}{preset.nome_escola ? ` · ${preset.nome_escola}` : ""}</option>)}</select><ChevronDown size={15} />{!hasSelectedHeader && <small className="header-select-hint">Cadastre um cabeçalho em Pré-promptos para continuar.</small>}</label>}
+          </section>
+          <div className="presets-applied"><span className="applied-icon"><Settings2 size={15} /></span><span><strong>{stylePresets.find((style) => style.id === selectedStyleId)?.nome ?? "Nenhum estilo selecionado"}</strong><small>Estilo de diagramação da conta</small></span><button onClick={onOpenPresets}>Estilos <ArrowRight size={13} /></button></div>
+          <div className="studio-submit"><span><Sparkles size={15} /> Material pronto para gerar</span><button className="button button-primary" onClick={onGenerate} disabled={!selectedTopicIds.length || !hasSelectedStyle || (artifact !== "Roteiro" && !hasSelectedHeader)}><Sparkles size={16} /> Gerar {artifact.toLowerCase()} <ArrowRight size={15} /></button></div>
         </div>
 
         <div className="studio-card correction-card">
@@ -1215,14 +1306,7 @@ function StudioScreen({ topics, selectedTopics, selectedTopicIds, onSelectedTopi
       </div>
 
       <aside className="studio-aside">
-        <div className="studio-settings">
-          <label className="form-label">LAYOUT DO MATERIAL<select defaultValue="Padrão escolar · 2 colunas"><option>Padrão escolar · 2 colunas</option><option>Folha de atividades</option><option>Plano de aula</option></select><ChevronDown size={15} /></label>
-          {selectedType === "Roteiro" ? <p className="header-not-required">Roteiros de aula não utilizam cabeçalho.</p> : <div className="studio-header-setting">
-            <label className="form-label">CABEÇALHO<select required value={selectedHeaderId} onChange={(event) => onSelectHeader(event.target.value)}><option value="">Selecione um cabeçalho</option>{headerPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.nome}{preset.nome_escola ? ` · ${preset.nome_escola}` : ""}</option>)}</select><ChevronDown size={15} /></label>
-            {!hasSelectedHeader && <small className="header-select-hint">Cadastre um cabeçalho em Pré-promptos para gerar atividades ou provas.</small>}
-          </div>}
-        </div>
-        <div className="preview-card"><div className="preview-top"><span className="section-kicker">VISUALIZAÇÃO</span><span className="preview-dots">•••</span></div>        <div className="paper">{selectedType !== "Roteiro" && <><div className="paper-brand"><span className="paper-logo"><GraduationCap size={15} /></span><span>INSTITUIÇÃO DE ENSINO<small>Material didático</small></span></div><div className="paper-line" /></>}<span className="paper-label">{selectedType.toUpperCase()}</span><h3>{selectedTopics.length ? selectedTopics.map((topic) => topic.titulo).join(", ") : "Selecione um ou mais tópicos"}</h3><p>Objetivos de aprendizagem e conteúdos para a sua turma.</p><div className="paper-section-title" /><div className="paper-line wide" /><div className="paper-line" /><div className="paper-question"><b>01.</b><span>Questão ou etapa do material preparada para seus alunos...</span></div><div className="paper-question"><b>02.</b><span>Desenvolva e explique sua resposta.</span></div><div className="paper-columns"><i /><i /></div><span className="paper-footer">PréPrompto · 2026</span></div><div className="export-row"><button className="button button-outline" onClick={() => onExport("PDF")}><FileText size={15} /> Exportar PDF</button><button className="button button-outline" onClick={() => onExport("DOCX")}><FileCheck2 size={15} /> Exportar DOCX</button></div></div>
+        <div className="preview-card"><div className="preview-top"><span className="section-kicker">VISUALIZAÇÃO</span><span className="preview-dots">•••</span></div>        <div className="paper">{artifact !== "Roteiro" && <><div className="paper-brand"><span className="paper-logo"><GraduationCap size={15} /></span><span>{headerPresets.find((preset) => preset.id === selectedHeaderId)?.nome_escola || "INSTITUIÇÃO DE ENSINO"}<small>{headerPresets.find((preset) => preset.id === selectedHeaderId)?.nome_professor || "Material didático"}</small></span></div><div className="paper-line" /></>}<span className="paper-label">{artifact.toUpperCase()}</span><h3>{selectedTopics.length ? selectedTopics.map((topic) => topic.titulo).join(", ") : "Selecione um ou mais tópicos"}</h3><p>Objetivos de aprendizagem e conteúdos para a sua turma.</p><div className="paper-section-title" /><div className="paper-line wide" /><div className="paper-line" /><div className="paper-question"><b>01.</b><span>Questão ou etapa do material preparada para seus alunos...</span></div><div className="paper-question"><b>02.</b><span>Desenvolva e explique sua resposta.</span></div><div className="paper-columns"><i /><i /></div><span className="paper-footer">PréPrompto · 2026</span></div><div className="export-row"><button className="button button-outline" onClick={() => onExport("PDF")}><FileText size={15} /> Exportar PDF</button><button className="button button-outline" onClick={() => onExport("DOCX")}><FileCheck2 size={15} /> Exportar DOCX</button></div></div>
         <div className="tip-card"><span><Sparkles size={15} /></span><p><strong>Dica de professor</strong>Materiais em 2 colunas ajudam a economizar papel na hora de imprimir.</p></div>
       </aside>
     </div>

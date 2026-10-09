@@ -71,6 +71,7 @@ export type Database = {
         layout_compacto: boolean;
         familia_fonte: string;
         tamanho_fonte: number;
+        modelo_pontuacao: "igualitaria" | "ponderada";
         tipos_artefato: Database["public"]["Enums"]["tipo_artefato"][];
         ativo: boolean;
         criado_em: string;
