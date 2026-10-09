@@ -368,7 +368,7 @@ export async function enviarEmenta(formData: FormData): Promise<ActionResult<Syl
         descricao: "Cabeçalho fixo para materiais desta matéria.",
         nome_escola: institution || null,
         nome_professor: profile.nome_completo || null,
-        tipos_artefato: ["roteiro_aula", "atividade", "prova"],
+        tipos_artefato: ["atividade", "prova"],
       });
       if (headerInsertError) {
         headerWarning = `Os tópicos foram identificados, mas o cabeçalho padrão não pôde ser salvo: ${errorMessage(headerInsertError)}`;
@@ -532,7 +532,7 @@ export async function salvarCabecalho(input: {
         professor_id: user.id,
         ...values,
         descricao: "Cabeçalho fixo para materiais desta matéria.",
-        tipos_artefato: ["roteiro_aula", "atividade", "prova"],
+        tipos_artefato: ["atividade", "prova"],
       });
   const { data, error } = await query
     .select("id,materia_id,nome,descricao,ativo,tipos_artefato,nome_escola,nome_professor,instrucoes_fixas,colunas_layout,layout_compacto,familia_fonte,tamanho_fonte")
@@ -603,7 +603,8 @@ export async function alterarPrePrompto(input: { id: string; ativo: boolean }): 
     .from("pre_promptos")
     .update({ ativo: input.ativo })
     .eq("id", input.id)
-    .eq("professor_id", user.id);
+    .eq("professor_id", user.id)
+    .is("materia_id", null);
   if (error) return { data: null, error: errorMessage(error) };
   revalidatePath("/");
   return { data: undefined, error: null };
@@ -650,6 +651,10 @@ export async function gerarMaterialComIA(input: {
     !["roteiro_aula", "atividade", "prova"].includes(input.tipo)
   ) {
     return { data: null, error: "Selecione a matéria, pelo menos um tópico e o tipo de material." };
+  }
+  const requiresHeader = input.tipo === "atividade" || input.tipo === "prova";
+  if (requiresHeader && !isNonEmptyString(input.cabecalhoId)) {
+    return { data: null, error: "Selecione um cabeçalho da matéria para gerar atividades ou provas." };
   }
   const topicIds = [...new Set(input.topicoIds)];
   const { supabase, user } = await usuarioAutenticado();
@@ -758,28 +763,25 @@ export async function gerarMaterialComIA(input: {
     nome: string;
     nome_escola: string | null;
     nome_professor: string | null;
-    ativo: boolean;
-    tipos_artefato: TipoMaterial[];
   } | null = null;
-  if (input.cabecalhoId) {
+  if (requiresHeader && input.cabecalhoId) {
     const { data, error } = await supabase
       .from("pre_promptos")
-      .select("id,nome,nome_escola,nome_professor,ativo,tipos_artefato")
+      .select("id,nome,nome_escola,nome_professor")
       .eq("id", input.cabecalhoId)
       .eq("professor_id", user.id)
       .eq("materia_id", subject.id)
       .single();
     if (error) return { data: null, error: errorMessage(error) };
-    if (!data.ativo || !data.tipos_artefato.includes(input.tipo)) {
-      return { data: null, error: "O cabeçalho escolhido está inativo ou não se aplica a este material." };
-    }
     header = data;
   }
-  const cabecalho = {
-    instituicao: header?.nome_escola || profile.nome_instituicao || "",
-    materia: subject.nome,
-    professor: header?.nome_professor || profile.nome_completo,
-  };
+  const cabecalho = requiresHeader
+    ? {
+      instituicao: header?.nome_escola || profile.nome_instituicao || "",
+      materia: subject.nome,
+      professor: header?.nome_professor || profile.nome_completo,
+    }
+    : { instituicao: "", materia: "", professor: "" };
 
   let resultado: Awaited<ReturnType<typeof gerarConteudoPedagogico>>;
   try {

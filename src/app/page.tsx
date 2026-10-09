@@ -50,6 +50,7 @@ import {
   type AppData,
   type MaterialGerado,
   type SyllabusRecord,
+  type TemplateRecord,
   type TopicRecord,
 } from "./actions";
 import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
@@ -75,6 +76,7 @@ export default function Home() {
   const [topicToDelete, setTopicToDelete] = useState<TopicRecord | null>(null);
   const [syllabusToDelete, setSyllabusToDelete] = useState<SyllabusRecord | null>(null);
   const [presetToDelete, setPresetToDelete] = useState<{ id: string; nome: string; cabecalho: boolean } | null>(null);
+  const [editingHeaderId, setEditingHeaderId] = useState<string | null>(null);
   const [artifact, setArtifact] = useState<Artifact>("Roteiro");
   const [selectedTopicIds, setSelectedTopicIds] = useState<string[]>([]);
   const [generatedMaterial, setGeneratedMaterial] = useState<MaterialGerado | null>(null);
@@ -105,7 +107,7 @@ export default function Home() {
         setSelectedHeaderId((current) =>
           result.data?.prePromptos.some((item) => item.id === current && item.materia_id === subjectId)
             ? current
-            : result.data?.prePromptos.find((item) => item.materia_id === subjectId && item.ativo)?.id ?? "",
+            : result.data?.prePromptos.find((item) => item.materia_id === subjectId)?.id ?? "",
         );
         setSelectedTopicIds((current) => {
           const availableTopics = result.data?.topicos.filter((topic) => topic.materia_id === subjectId) ?? [];
@@ -133,8 +135,8 @@ export default function Home() {
   const activeTopic = topics.find((topic) => selectedTopicIds.includes(topic.id));
   const presets = appData?.prePromptos ?? [];
   const subjectHeaders = presets.filter((preset) => preset.materia_id === selectedSubject);
-  const selectedHeader = subjectHeaders.find((preset) => preset.id === selectedHeaderId && preset.ativo)
-    ?? (selectedHeaderId ? subjectHeaders.find((preset) => preset.ativo) : undefined);
+  const selectedHeader = subjectHeaders.find((preset) => preset.id === selectedHeaderId)
+    ?? subjectHeaders[0];
   const uploadedFile = syllabus?.nome_arquivo ?? "";
   const syllabusExtractionError = syllabusUploadError || (syllabus?.situacao_extracao === "falhou" ? syllabus.erro_extracao ?? "A extração dos tópicos falhou." : null);
   const totals = useMemo(() => {
@@ -248,6 +250,11 @@ export default function Home() {
       return;
     }
     const artifactType = artifact === "Roteiro" ? "roteiro_aula" : artifact === "Atividade" ? "atividade" : "prova";
+    const requiresHeader = artifactType !== "roteiro_aula";
+    if (requiresHeader && !selectedHeader) {
+      setGenerationError("Cadastre e selecione um cabeçalho desta matéria antes de gerar uma atividade ou prova.");
+      return;
+    }
     const activePreset = presets.find((preset) => !preset.materia_id && preset.ativo && preset.tipos_artefato.includes(artifactType));
     generationLockRef.current = true;
     setGenerationError("");
@@ -258,7 +265,7 @@ export default function Home() {
           materiaId: subject.id,
           topicoIds: topicIds,
           prePromptoId: activePreset?.id ?? null,
-          cabecalhoId: selectedHeader?.id ?? null,
+          cabecalhoId: requiresHeader ? selectedHeader.id : null,
           tipo: artifactType,
         });
         if (result.error || !result.data) {
@@ -317,6 +324,7 @@ export default function Home() {
         return;
       }
       if (presetToDelete.cabecalho && selectedHeaderId === presetToDelete.id) setSelectedHeaderId("");
+      if (presetToDelete.cabecalho && editingHeaderId === presetToDelete.id) setEditingHeaderId(null);
       const removedName = presetToDelete.nome;
       setPresetToDelete(null);
       await refreshData(selectedSubject);
@@ -362,6 +370,7 @@ export default function Home() {
       notify("O cabeçalho não foi atualizado.");
       return;
     }
+    setEditingHeaderId(null);
     await refreshData(selectedSubject);
     notify("Cabeçalho atualizado.");
   }
@@ -527,12 +536,14 @@ export default function Home() {
     const paragraphs = flattenMaterial(contentForExport);
     const filename = title.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-").replaceAll(/^-|-$/g, "");
     const headerRows = [
-      ["Instituição", generatedMaterial.cabecalho.instituicao || "________________________________"],
-      ["Matéria", generatedMaterial.cabecalho.materia || "________________________________"],
-      ["Professor(a)", generatedMaterial.cabecalho.professor || "________________________________"],
-      ["Tópico(s)", generatedMaterial.cabecalho.topicos.join(", ")],
-      ["Nome do aluno", "________________________________"],
-      ["Data", "____/____/______"],
+      ...(generatedMaterial.tipo === "roteiro_aula" ? [] : [
+        ["Instituição", generatedMaterial.cabecalho.instituicao || "________________________________"],
+        ["Matéria", generatedMaterial.cabecalho.materia || "________________________________"],
+        ["Professor(a)", generatedMaterial.cabecalho.professor || "________________________________"],
+        ["Tópico(s)", generatedMaterial.cabecalho.topicos.join(", ")],
+        ["Nome do aluno", "________________________________"],
+        ["Data", "____/____/______"],
+      ]),
     ];
 
     if (format === "PDF") {
@@ -546,10 +557,10 @@ export default function Home() {
           ? `<h2>${escapeHtml(paragraph.text)}</h2>`
           : `<p>${escapeHtml(paragraph.text)}</p>`,
       ).join("");
-      const header = headerRows.map(([label, value]) =>
+      const header = headerRows.length ? `<header class="school-header">${headerRows.map(([label, value]) =>
         `<div class="header-field"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</div>`,
-      ).join("");
-      printWindow.document.write(`<html lang="pt-BR"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font:14px Arial,sans-serif;color:#24242a;max-width:760px;margin:48px auto;line-height:1.55}.school-header{border:1px solid #777;padding:14px 16px;margin-bottom:22px}.header-field{min-height:23px}h1{font-size:23px;margin:20px 0 6px}h2{font-size:15px;margin-top:25px;color:#5146ac}p{margin:8px 0}.questions{columns:2;column-gap:28px}@media print{body{margin:20mm auto}}</style></head><body><header class="school-header">${header}</header><h1>${escapeHtml(title)}</h1><div class="questions">${body}</div><script>window.onload=()=>window.print()</script></body></html>`);
+      ).join("")}</header>` : "";
+      printWindow.document.write(`<html lang="pt-BR"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font:14px Arial,sans-serif;color:#24242a;max-width:760px;margin:48px auto;line-height:1.55}.school-header{border:1px solid #777;padding:14px 16px;margin-bottom:22px}.header-field{min-height:23px}h1{font-size:23px;margin:20px 0 6px}h2{font-size:15px;margin-top:25px;color:#5146ac}p{margin:8px 0}.questions{columns:2;column-gap:28px}@media print{body{margin:20mm auto}}</style></head><body>${header}<h1>${escapeHtml(title)}</h1><div class="questions">${body}</div><script>window.onload=()=>window.print()</script></body></html>`);
       printWindow.document.close();
       notify("Visualização pronta. Escolha “Salvar como PDF” na janela de impressão.");
       return;
@@ -595,9 +606,10 @@ export default function Home() {
               const id = event.target.value;
               setSelectedSubject(id);
               setSyllabusUploadError("");
+              setEditingHeaderId(null);
               const firstTopic = appData.topicos.find((item) => item.materia_id === id);
               setSelectedTopicIds(firstTopic ? [firstTopic.id] : []);
-              setSelectedHeaderId(appData.prePromptos.find((item) => item.materia_id === id && item.ativo)?.id ?? "");
+              setSelectedHeaderId(appData.prePromptos.find((item) => item.materia_id === id)?.id ?? "");
             }}>
               {appData.materias.map((item) => <option key={item.id} value={item.id}>{item.nome}</option>)}
             </select>
@@ -736,6 +748,10 @@ export default function Home() {
               onOpenPresets={() => setScreen("presets")}
               onExport={exportDocument}
               provas={appData.provas}
+              headerPresets={subjectHeaders}
+              selectedHeaderId={selectedHeader?.id ?? ""}
+              hasSelectedHeader={Boolean(selectedHeader)}
+              onSelectHeader={setSelectedHeaderId}
             />
           )}
 
@@ -743,7 +759,7 @@ export default function Home() {
             <section className="presets-page">
               <div className="page-heading">
                 <div><div className="heading-overline"><span className="heading-rule" /> SEU JEITO DE ENSINAR</div><h1>Pré-promptos</h1><p className="page-subtitle">Salve suas preferências uma vez. Seus próximos materiais já começam do seu jeito.</p></div>
-                <span className="saved-count"><Check size={15} /> {presets.filter((preset) => preset.ativo).length} padrões ativos</span>
+                <span className="saved-count"><Check size={15} /> {presets.filter((preset) => !preset.materia_id && preset.ativo).length} pré-promptos ativos</span>
               </div>
               <div className="preset-intro">
                 <div className="preset-intro-icon"><Settings2 size={20} /></div>
@@ -777,27 +793,30 @@ export default function Home() {
                   <div><span className="section-kicker">PADRÕES POR MATÉRIA</span><h2>Cabeçalhos fixos</h2></div>
                   <span className="header-subject-name">{subject?.nome}</span>
                 </div>
-                <p className="page-subtitle">Cada escola pode ter seu próprio cabeçalho. O padrão criado na leitura da ementa já vem preenchido e pode ser ajustado.</p>
+                <p className="page-subtitle">Escolha entre os cabeçalhos desta matéria ao criar uma atividade ou prova. Cada escola pode ter seu próprio padrão.</p>
                 <div className="preset-list header-preset-list">
                   {subjectHeaders.map((headerPreset) => (
-                    <article className="header-preset-card" key={headerPreset.id}>
+                    <article className={`header-preset-card ${editingHeaderId === headerPreset.id ? "header-preset-open" : ""}`} key={headerPreset.id}>
                       <div className="header-preset-title">
-                        <div><h3>{headerPreset.nome}</h3><p>{headerPreset.descricao || "Cabeçalho fixo para materiais desta matéria"}</p></div>
-                        <div className="header-preset-actions"><button className={`toggle ${headerPreset.ativo ? "toggle-on" : ""}`} role="switch" aria-checked={headerPreset.ativo} aria-label={`Ativar ${headerPreset.nome}`} onClick={() => togglePreset(headerPreset.id, !headerPreset.ativo)} disabled={isPending}><span /></button><button type="button" className="button button-danger-outline button-small" onClick={() => setPresetToDelete({ id: headerPreset.id, nome: headerPreset.nome, cabecalho: true })}><Trash2 size={14} /> Excluir</button></div>
+                        <div className="header-preset-summary"><h3>{headerPreset.nome}</h3><span className="header-institution-badge">{headerPreset.nome_escola || "Instituição não definida"}</span></div>
+                        <div className="header-preset-actions">
+                          <button type="button" className="button button-outline button-small" aria-expanded={editingHeaderId === headerPreset.id} onClick={() => setEditingHeaderId((current) => current === headerPreset.id ? null : headerPreset.id)}><Pencil size={13} /> {editingHeaderId === headerPreset.id ? "Fechar" : "Editar"}</button>
+                          <button type="button" className="button button-danger-outline button-small" onClick={() => setPresetToDelete({ id: headerPreset.id, nome: headerPreset.nome, cabecalho: true })}><Trash2 size={14} /> Excluir</button>
+                        </div>
                       </div>
-                      <form action={async (formData) => updateHeader(headerPreset.id, formData)} className="header-edit-form">
-                        <label>Nome deste padrão<input name="nome" defaultValue={headerPreset.nome} maxLength={120} required /></label>
-                        <div className="form-row">
-                          <label>Instituição<input name="nomeEscola" defaultValue={headerPreset.nome_escola ?? ""} maxLength={160} placeholder="Nome da escola/faculdade" /></label>
-                          <label>Professor(a)<input name="nomeProfessor" defaultValue={headerPreset.nome_professor ?? appData.professor.nome_completo} maxLength={160} placeholder="Nome do professor" /></label>
-                        </div>
-                        <div className="header-fields-preview" aria-label="Campos fixos do cabeçalho">
-                          <strong>Lista fixa impressa</strong>
-                          <span>Instituição</span><span>Matéria: {subject?.nome}</span><span>Professor(a)</span>
-                          <span>Nome do aluno: ____________________</span><span>Data: ____/____/______</span>
-                        </div>
-                        <button className="button button-outline button-small" disabled={isPending}><Check size={14} /> Salvar cabeçalho</button>
-                      </form>
+                      {editingHeaderId === headerPreset.id && <form action={async (formData) => updateHeader(headerPreset.id, formData)} className="header-edit-form">
+                          <label>Nome do padrão<input name="nome" defaultValue={headerPreset.nome} maxLength={120} required /></label>
+                          <div className="form-row">
+                            <label>Instituição<input name="nomeEscola" defaultValue={headerPreset.nome_escola ?? ""} maxLength={160} placeholder="Nome da escola/faculdade" /></label>
+                            <label>Professor(a)<input name="nomeProfessor" defaultValue={headerPreset.nome_professor ?? appData.professor.nome_completo} maxLength={160} placeholder="Nome do professor" /></label>
+                          </div>
+                          <div className="header-fields-preview" aria-label="Pré-visualização da impressão">
+                            <strong>Pré-visualização da impressão</strong>
+                            <span>{headerPreset.nome_escola || "Instituição"}</span><span>Matéria: {subject?.nome}</span><span>{headerPreset.nome_professor || appData.professor.nome_completo}</span>
+                            <span>Nome do aluno: ____________________</span><span>Data: ____/____/______</span>
+                          </div>
+                          <div className="header-edit-actions"><button type="button" className="button button-quiet button-small" onClick={() => setEditingHeaderId(null)} disabled={isPending}>Cancelar</button><button className="button button-primary button-small" disabled={isPending}><Check size={14} /> {isPending ? "Salvando…" : "Salvar cabeçalho"}</button></div>
+                        </form>}
                     </article>
                   ))}
                   {subjectHeaders.length === 0 && <p className="empty-state header-empty-state">Envie um documento-base desta matéria para criar o primeiro cabeçalho automaticamente, ou cadastre um abaixo.</p>}
@@ -813,7 +832,7 @@ export default function Home() {
                   <p>Nome do aluno e data permanecem em branco para preenchimento manual na aplicação da atividade ou prova.</p>
                 </form>
               </section>
-              <div className="preset-footnote"><FileCheck2 size={15} /> Os padrões ativos serão considerados ao preparar o próximo material.</div>
+              <div className="preset-footnote"><FileCheck2 size={15} /> Os pré-promptos ativos serão aplicados automaticamente; cabeçalhos são escolhidos por material.</div>
             </section>
           )}
         </div>
@@ -880,10 +899,10 @@ export default function Home() {
               {(["Roteiro", "Atividade", "Prova"] as Artifact[]).map((option) => <button key={option} className={`artifact-option ${artifact === option ? "artifact-selected" : ""}`} onClick={() => setArtifact(option)}><span className="artifact-option-icon">{option === "Roteiro" ? <BookOpen size={18} /> : option === "Atividade" ? <FilePlus2 size={18} /> : <ClipboardCheck size={18} />}</span><span><strong>{option}</strong><small>{option === "Roteiro" ? "Plano de aula estruturado" : option === "Atividade" ? "Exercícios para praticar" : "Avaliação com gabarito"}</small></span>{artifact === option && <CheckCircle2 size={17} className="selected-check" />}</button>)}
             </div>
             <TopicSelectionList topics={topics} selectedTopicIds={selectedTopicIds} onSelectedTopics={setSelectedTopicIds} disabled={isGenerating} />
-            <label className="form-label">CABEÇALHO<select value={selectedHeader?.id ?? ""} onChange={(event) => setSelectedHeaderId(event.target.value)}><option value="">Cabeçalho do perfil</option>{subjectHeaders.filter((item) => item.ativo).map((item) => <option key={item.id} value={item.id}>{item.nome}{item.nome_escola ? ` · ${item.nome_escola}` : ""}</option>)}</select><ChevronDown size={15} /></label>
-            <div className="modal-template"><div><span className="template-icon"><FileText size={16} /></span><span><strong>Padrão selecionado</strong><small>{presets.filter((preset) => preset.ativo).length} preferências serão aplicadas</small></span></div><button onClick={() => { setModalOpen(false); setScreen("presets"); }}>Editar</button></div>
+            {artifact === "Roteiro" ? <p className="header-not-required">Roteiros de aula não utilizam cabeçalho.</p> : <div className="generator-header-setting"><label className="form-label">CABEÇALHO<select required value={selectedHeader?.id ?? ""} onChange={(event) => setSelectedHeaderId(event.target.value)}><option value="">Selecione um cabeçalho</option>{subjectHeaders.map((item) => <option key={item.id} value={item.id}>{item.nome}{item.nome_escola ? ` · ${item.nome_escola}` : ""}</option>)}</select><ChevronDown size={15} /></label>{!subjectHeaders.length && <small className="header-select-hint">Cadastre um cabeçalho em Pré-promptos para continuar.</small>}</div>}
+            <div className="modal-template"><div><span className="template-icon"><FileText size={16} /></span><span><strong>Padrões selecionados</strong><small>{presets.filter((preset) => !preset.materia_id && preset.ativo).length} preferências serão aplicadas</small></span></div><button onClick={() => { setModalOpen(false); setScreen("presets"); }}>Editar</button></div>
             {generationError && <p className="generation-error" role="alert">{generationError}</p>}
-            <div className="modal-footer"><button className="button button-quiet" onClick={() => setModalOpen(false)} disabled={isPending}>Cancelar</button><button className="button button-primary" onClick={generateArtifact} disabled={isPending}><Sparkles size={15} /> {isPending ? "Preparando…" : "Gerar material"}</button></div>
+            <div className="modal-footer"><button className="button button-quiet" onClick={() => setModalOpen(false)} disabled={isPending}>Cancelar</button><button className="button button-primary" onClick={generateArtifact} disabled={isPending || (artifact !== "Roteiro" && !selectedHeader)}><Sparkles size={15} /> {isPending ? "Preparando…" : "Gerar material"}</button></div>
             <p className="modal-disclaimer">O conteúdo gerado será salvo no seu histórico e poderá ser exportado em PDF ou DOCX.</p>
           </> : <div className="generation-panel" aria-live="polite">
             <span className="section-kicker">GERAÇÃO EM ANDAMENTO</span>
@@ -1138,7 +1157,7 @@ function TopicSelectionList({ topics, selectedTopicIds, onSelectedTopics, disabl
   </fieldset>;
 }
 
-function StudioScreen({ topics, selectedTopics, selectedTopicIds, onSelectedTopics, uploadedFile, isUploadingSyllabus, syllabusExtractionError, fileInputRef, onFile, onGenerate, onOpenPresets, onExport, provas }: {
+function StudioScreen({ topics, selectedTopics, selectedTopicIds, onSelectedTopics, uploadedFile, isUploadingSyllabus, syllabusExtractionError, fileInputRef, onFile, onGenerate, onOpenPresets, onExport, provas, headerPresets, selectedHeaderId, hasSelectedHeader, onSelectHeader }: {
   topics: TopicRecord[];
   selectedTopics: TopicRecord[];
   selectedTopicIds: string[];
@@ -1152,6 +1171,10 @@ function StudioScreen({ topics, selectedTopics, selectedTopicIds, onSelectedTopi
   onGenerate: (topicIds: string[], artifact?: Artifact) => void;
   onOpenPresets: () => void;
   onExport: (format: "PDF" | "DOCX", includeTeacherNotes?: boolean) => void;
+  headerPresets: TemplateRecord[];
+  selectedHeaderId: string;
+  hasSelectedHeader: boolean;
+  onSelectHeader: (id: string) => void;
 }) {
   const [selectedType, setSelectedType] = useState<Artifact>("Roteiro");
   const [correctionOpen, setCorrectionOpen] = useState(false);
@@ -1180,9 +1203,9 @@ function StudioScreen({ topics, selectedTopics, selectedTopicIds, onSelectedTopi
         <div className="studio-card create-card">
           <div className="card-title-row"><div className="number-badge">02</div><div><span className="section-kicker">NOVO MATERIAL</span><h2>O que você quer criar?</h2></div></div>
           <div className="create-type-grid">{(["Roteiro", "Atividade", "Prova"] as Artifact[]).map((type) => <button key={type} className={`create-type ${selectedType === type ? "create-type-active" : ""}`} onClick={() => setSelectedType(type)}><span className="create-type-icon">{type === "Roteiro" ? <BookOpen size={20} /> : type === "Atividade" ? <FilePlus2 size={20} /> : <ClipboardCheck size={20} />}</span><strong>{type}</strong><span>{type === "Roteiro" ? "Plano de aula completo" : type === "Atividade" ? "Prática para a turma" : "Avaliação e gabarito"}</span>{selectedType === type && <CheckCircle2 size={16} className="type-check" />}</button>)}</div>
-          <div className="studio-topic-layout"><TopicSelectionList topics={topics} selectedTopicIds={selectedTopicIds} onSelectedTopics={onSelectedTopics} disabled={topics.length === 0} /><label className="form-label">LAYOUT DO MATERIAL<select defaultValue="Padrão escolar · 2 colunas"><option>Padrão escolar · 2 colunas</option><option>Folha de atividades</option><option>Plano de aula</option></select><ChevronDown size={15} /></label></div>
+          <div className="studio-topic-layout"><TopicSelectionList topics={topics} selectedTopicIds={selectedTopicIds} onSelectedTopics={onSelectedTopics} disabled={topics.length === 0} /></div>
           <div className="presets-applied"><span className="applied-icon"><Settings2 size={15} /></span><span><strong>Seus pré-promptos ativos</strong><small>Preferências aplicáveis incorporadas ao material</small></span><button onClick={onOpenPresets}>Ver padrões <ArrowRight size={13} /></button></div>
-          <div className="studio-submit"><span><Sparkles size={15} /> Plano pedagógico pronto em poucos segundos</span><button className="button button-primary" onClick={() => onGenerate(selectedTopicIds, selectedType)} disabled={!selectedTopicIds.length}><Sparkles size={16} /> Gerar {selectedType.toLowerCase()} <ArrowRight size={15} /></button></div>
+          <div className="studio-submit"><span><Sparkles size={15} /> Plano pedagógico pronto em poucos segundos</span><button className="button button-primary" onClick={() => onGenerate(selectedTopicIds, selectedType)} disabled={!selectedTopicIds.length || (selectedType !== "Roteiro" && !hasSelectedHeader)}><Sparkles size={16} /> Gerar {selectedType.toLowerCase()} <ArrowRight size={15} /></button></div>
         </div>
 
         <div className="studio-card correction-card">
@@ -1192,7 +1215,14 @@ function StudioScreen({ topics, selectedTopics, selectedTopicIds, onSelectedTopi
       </div>
 
       <aside className="studio-aside">
-        <div className="preview-card"><div className="preview-top"><span className="section-kicker">VISUALIZAÇÃO</span><span className="preview-dots">•••</span></div>        <div className="paper"><div className="paper-brand"><span className="paper-logo"><GraduationCap size={15} /></span><span>INSTITUIÇÃO DE ENSINO<small>Material didático</small></span></div><div className="paper-line" /><span className="paper-label">{selectedType.toUpperCase()}</span><h3>{selectedTopics.length ? selectedTopics.map((topic) => topic.titulo).join(", ") : "Selecione um ou mais tópicos"}</h3><p>Objetivos de aprendizagem e conteúdos para a sua turma.</p><div className="paper-section-title" /><div className="paper-line wide" /><div className="paper-line" /><div className="paper-question"><b>01.</b><span>Questão ou etapa do material preparada para seus alunos...</span></div><div className="paper-question"><b>02.</b><span>Desenvolva e explique sua resposta.</span></div><div className="paper-columns"><i /><i /></div><span className="paper-footer">PréPrompto · 2026</span></div><div className="export-row"><button className="button button-outline" onClick={() => onExport("PDF")}><FileText size={15} /> Exportar PDF</button><button className="button button-outline" onClick={() => onExport("DOCX")}><FileCheck2 size={15} /> Exportar DOCX</button></div></div>
+        <div className="studio-settings">
+          <label className="form-label">LAYOUT DO MATERIAL<select defaultValue="Padrão escolar · 2 colunas"><option>Padrão escolar · 2 colunas</option><option>Folha de atividades</option><option>Plano de aula</option></select><ChevronDown size={15} /></label>
+          {selectedType === "Roteiro" ? <p className="header-not-required">Roteiros de aula não utilizam cabeçalho.</p> : <div className="studio-header-setting">
+            <label className="form-label">CABEÇALHO<select required value={selectedHeaderId} onChange={(event) => onSelectHeader(event.target.value)}><option value="">Selecione um cabeçalho</option>{headerPresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.nome}{preset.nome_escola ? ` · ${preset.nome_escola}` : ""}</option>)}</select><ChevronDown size={15} /></label>
+            {!hasSelectedHeader && <small className="header-select-hint">Cadastre um cabeçalho em Pré-promptos para gerar atividades ou provas.</small>}
+          </div>}
+        </div>
+        <div className="preview-card"><div className="preview-top"><span className="section-kicker">VISUALIZAÇÃO</span><span className="preview-dots">•••</span></div>        <div className="paper">{selectedType !== "Roteiro" && <><div className="paper-brand"><span className="paper-logo"><GraduationCap size={15} /></span><span>INSTITUIÇÃO DE ENSINO<small>Material didático</small></span></div><div className="paper-line" /></>}<span className="paper-label">{selectedType.toUpperCase()}</span><h3>{selectedTopics.length ? selectedTopics.map((topic) => topic.titulo).join(", ") : "Selecione um ou mais tópicos"}</h3><p>Objetivos de aprendizagem e conteúdos para a sua turma.</p><div className="paper-section-title" /><div className="paper-line wide" /><div className="paper-line" /><div className="paper-question"><b>01.</b><span>Questão ou etapa do material preparada para seus alunos...</span></div><div className="paper-question"><b>02.</b><span>Desenvolva e explique sua resposta.</span></div><div className="paper-columns"><i /><i /></div><span className="paper-footer">PréPrompto · 2026</span></div><div className="export-row"><button className="button button-outline" onClick={() => onExport("PDF")}><FileText size={15} /> Exportar PDF</button><button className="button button-outline" onClick={() => onExport("DOCX")}><FileCheck2 size={15} /> Exportar DOCX</button></div></div>
         <div className="tip-card"><span><Sparkles size={15} /></span><p><strong>Dica de professor</strong>Materiais em 2 colunas ajudam a economizar papel na hora de imprimir.</p></div>
       </aside>
     </div>
