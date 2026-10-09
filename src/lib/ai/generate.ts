@@ -35,7 +35,7 @@ function listOfRecords(value: unknown, min: number, max = Number.POSITIVE_INFINI
   return Array.isArray(value) && value.length >= min && value.length <= max && value.every(isRecord);
 }
 
-function questionsHaveValidPoints(questions: unknown, expectedTotal: number) {
+function questionsHaveValidPoints(questions: unknown, expectedTotal: number, modeloPontuacao: ContextoPedagogico["modeloPontuacao"]) {
   if (!Array.isArray(questions) || !questions.every((question) => isRecord(question) && typeof question.pontos === "number")) {
     return false;
   }
@@ -43,10 +43,14 @@ function questionsHaveValidPoints(questions: unknown, expectedTotal: number) {
     (sum, question) => sum + (isRecord(question) && typeof question.pontos === "number" ? question.pontos : 0),
     0,
   );
-  return Math.abs(total - expectedTotal) < 0.01;
+  const equalPoints = questions.length < 2 || questions.every((question) =>
+    isRecord(question) && typeof question.pontos === "number" &&
+      Math.abs(question.pontos - (questions[0] as Record<string, number>).pontos) < 0.01,
+  );
+  return Math.abs(total - expectedTotal) < 0.01 && (modeloPontuacao !== "igualitaria" || equalPoints);
 }
 
-function validateConteudo(tipo: TipoMaterial, value: unknown): string[] {
+function validateConteudo(tipo: TipoMaterial, value: unknown, contexto: ContextoPedagogico): string[] {
   if (!isRecord(value) || !isNonEmptyString(value.titulo)) {
     return ["O objeto precisa ter título."];
   }
@@ -74,45 +78,56 @@ function validateConteudo(tipo: TipoMaterial, value: unknown): string[] {
 
   if (tipo === "atividade") {
     if (!listOfRecords(value.questoes, 4, 6)) return ["A atividade precisa ter de quatro a seis questões."];
-    if (!listOfRecords(value.gabaritoComentado, 4)) return ["Inclua um gabarito comentado para cada questão."];
     const questions = value.questoes as unknown[];
-    const answerKey = value.gabaritoComentado as unknown[];
-    if (answerKey.length !== questions.length) {
-      return ["Inclua um gabarito comentado para cada questão."];
+    if (!questionsHaveValidPoints(questions, 10, contexto.modeloPontuacao)) {
+      return ["Distribua os 10 pontos conforme o estilo selecionado."];
+    }
+    if (contexto.opcoes.incluirGabarito) {
+      if (!listOfRecords(value.gabaritoComentado, 4)) return ["Inclua um gabarito comentado para cada questão."];
+      const answerKey = value.gabaritoComentado as unknown[];
+      if (answerKey.length !== questions.length) return ["Inclua um gabarito comentado para cada questão."];
+    } else {
+      delete value.gabaritoComentado;
     }
     if (!stringArray(value.instrucoesAoEstudante)) return ["Inclua instruções claras para os estudantes."];
     return [];
   }
 
-  if (
-    typeof value.totalPontos !== "number" ||
-    !isRecord(value.versoes) ||
-    !isRecord(value.versoes.A) ||
-    !isRecord(value.versoes.B) ||
-    !isRecord(value.gabaritoComentado)
-  ) {
-    return ["A prova precisa incluir duas versões e gabaritos comentados."];
+  if (typeof value.totalPontos !== "number" || Math.abs(value.totalPontos - 10) >= 0.01) {
+    return ["A prova precisa totalizar exatamente 10 pontos."];
   }
-  const versionA = value.versoes.A.questoes;
-  const versionB = value.versoes.B.questoes;
-  if (!listOfRecords(versionA, 5, 8) || !listOfRecords(versionB, 5, 8)) {
-    return ["Cada versão da prova precisa conter de cinco a oito questões."];
+  const versions = isRecord(value.versoes) ? value.versoes : {};
+  const versionA = isRecord(versions.A) ? versions.A.questoes : value.questoes;
+  const versionB = isRecord(versions.B) ? versions.B.questoes : undefined;
+  if (!listOfRecords(versionA, 5, 8)) return ["A prova precisa conter de cinco a oito questões."];
+  if (contexto.opcoes.versoesAB && !listOfRecords(versionB, 5, 8)) {
+    return ["A prova precisa incluir de cinco a oito questões nas versões A e B."];
+  }
+  if (!contexto.opcoes.versoesAB && versionB !== undefined) {
+    delete versions.B;
   }
   const questionsA = versionA as unknown[];
-  const questionsB = versionB as unknown[];
-  if (!questionsHaveValidPoints(questionsA, value.totalPontos) || !questionsHaveValidPoints(questionsB, value.totalPontos)) {
-    return ["A soma dos pontos das questões das versões A e B precisa corresponder ao total da prova."];
+  if (!questionsHaveValidPoints(questionsA, value.totalPontos, contexto.modeloPontuacao)) {
+    return ["A pontuação das questões da versão A precisa seguir o estilo selecionado e somar 10 pontos."];
   }
-  const answerA = value.gabaritoComentado.A;
-  const answerB = value.gabaritoComentado.B;
-  if (
-    !Array.isArray(answerA) ||
-    !Array.isArray(answerB) ||
-    answerA.length !== questionsA.length ||
-    answerB.length !== questionsB.length
-  ) {
-    return ["Inclua o gabarito comentado de cada questão das duas versões."];
+  if (contexto.opcoes.versoesAB && !questionsHaveValidPoints(versionB, value.totalPontos, contexto.modeloPontuacao)) {
+    return ["A pontuação das questões da versão B precisa seguir o estilo selecionado e somar 10 pontos."];
   }
+  if (contexto.opcoes.incluirGabarito) {
+    if (!isRecord(value.gabaritoComentado) || !Array.isArray(value.gabaritoComentado.A) || value.gabaritoComentado.A.length !== questionsA.length) {
+      return ["Inclua o gabarito comentado de cada questão da versão A."];
+    }
+    if (contexto.opcoes.versoesAB && (!Array.isArray(value.gabaritoComentado.B) || value.gabaritoComentado.B.length !== (versionB as unknown[]).length)) {
+      return ["Inclua o gabarito comentado de cada questão da versão B."];
+    }
+    if (!contexto.opcoes.versoesAB) delete value.gabaritoComentado.B;
+  } else {
+    delete value.gabaritoComentado;
+  }
+  value.versoes = contexto.opcoes.versoesAB
+    ? { A: { questoes: questionsA }, B: { questoes: versionB } }
+    : { A: { questoes: questionsA } };
+  delete value.questoes;
   if (
     !Array.isArray(value.rubrica) ||
     value.rubrica.length === 0 ||
@@ -182,7 +197,7 @@ export async function gerarConteudoPedagogico(
     } catch {
       throw new Error("IA_INVALID_JSON");
     }
-    const validationErrors = validateConteudo(tipo, conteudo);
+    const validationErrors = validateConteudo(tipo, conteudo, contexto);
     if (validationErrors.length) {
       throw new Error(`IA_INVALID_CONTENT:${validationErrors.join(" ")}`);
     }
@@ -238,9 +253,9 @@ export async function gerarConteudoPedagogico(
     let respostaAtual = interaction.output_text ?? "";
     const limiteCorrecoes = 2;
     const regrasDeCorrecao = tipo === "prova"
-      ? "Confira especialmente: versões A e B com 5 a 8 questões cada; um gabarito em lista para cada questão de cada versão; soma dos pontos das questões de cada versão igual a totalPontos; soma de rubrica[].maximoPontos exatamente igual a totalPontos; instruções ao estudante."
+      ? `Confira especialmente: ${contexto.opcoes.versoesAB ? "versões A e B com 5 a 8 questões cada" : "somente a versão A com 5 a 8 questões"}; ${contexto.opcoes.incluirGabarito ? "gabarito em lista de acordo com as versões solicitadas" : "omita gabaritoComentado"}; pontuação ${contexto.modeloPontuacao} somando 10; soma de rubrica[].maximoPontos exatamente igual a 10; instruções ao estudante.`
       : tipo === "atividade"
-        ? "Confira especialmente: 4 a 6 questões e exatamente um item de gabaritoComentado para cada questão; instruções ao estudante."
+        ? `Confira especialmente: 4 a 6 questões somando 10 pontos com pontuação ${contexto.modeloPontuacao}; ${contexto.opcoes.incluirGabarito ? "um item de gabaritoComentado para cada questão" : "omita gabaritoComentado"}; instruções ao estudante.`
         : "Confira especialmente: objetivos de aprendizagem, pelo menos quatro etapas completas, soma das durações igual à duração total, avaliação formativa, materiais e diferenciação/inclusão.";
 
     for (let tentativa = 0; tentativa <= limiteCorrecoes; tentativa += 1) {

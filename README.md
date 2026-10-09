@@ -21,11 +21,11 @@ O acesso ao Supabase é feito por Server Actions com sessão em cookies HTTP-onl
 
 ## Banco de dados Supabase
 
-A estrutura inicial está em `supabase/migrations/20261007230000_initial_schema.sql`; os cabeçalhos de pré-prompto vinculados a uma matéria são adicionados por `supabase/migrations/20261008230000_subject_header_presets.sql`. Os nomes de entidades, campos, tipos, políticas e funções criados pelo projeto estão em português:
+A estrutura inicial está em `supabase/migrations/20261007230000_initial_schema.sql`; os cabeçalhos vinculados a uma matéria são adicionados por `supabase/migrations/20261008230000_subject_header_presets.sql`. As migrations `supabase/migrations/20261009000000_subject_year_only.sql` e `supabase/migrations/20261009010000_single_syllabus_per_subject.sql` focam o cadastro em matérias/anos e impõem uma ementa por matéria. A migration `supabase/migrations/20261009020000_account_prompt_styles.sql` adiciona estilos globais de pré-prompto, regras de pontuação e os três presets padrão por conta. Os nomes de entidades, campos, tipos, políticas e funções criados pelo projeto estão em português:
 
-- `professores`, `materias` e `turmas` para a gestão acadêmica;
+- `professores` e `materias`, com cada matéria associada a um ano letivo;
 - `ementas` e `topicos_ementa` para documentos-base, extração e acompanhamento do conteúdo;
-- `pre_promptos` para cabeçalhos, instruções e layouts reutilizáveis;
+- `pre_promptos` para estilos de pré-prompto globais à conta e cabeçalhos vinculados a uma matéria;
 - `artefatos` e `artefatos_topicos` para roteiros, atividades e provas relacionados aos tópicos;
 - `correcoes` para respostas, notas e devolutivas vinculadas às provas;
 - buckets privados `documentos-base` e `respostas-avaliacao`.
@@ -56,4 +56,4 @@ npx supabase start
 npx supabase migration up
 ```
 
-O perfil do professor é criado automaticamente a partir do Supabase Auth. Ao ler uma ementa, a IA também identifica matéria e instituição quando esses dados aparecem explicitamente; o sistema cria um cabeçalho fixo vinculado à matéria e permite manter padrões separados para cada escola. Os cabeçalhos são incluídos nas exportações PDF/DOCX, com nome do aluno, turma e data em branco para preenchimento manual. A geração aceita selecionar vários tópicos da matéria para compor um único material. Pré-promptos e cabeçalhos podem ser editados e excluídos. Cadastro, login, matérias, turmas, upload e exclusão de ementas, extração automática, edição e exclusão de tópicos, pré-promptos e geração de roteiros, atividades e provas usam o banco. As gerações são validadas antes de salvar; provas incluem versões A/B, gabarito comentado e rubrica. A leitura automática de respostas manuscritas e correção por IA ainda não estão implementadas.
+O perfil do professor é criado automaticamente a partir do Supabase Auth. Ao ler uma ementa, a IA também identifica matéria e instituição quando esses dados aparecem explicitamente; o sistema cria um cabeçalho fixo vinculado à matéria e permite manter padrões separados para cada escola. Os cabeçalhos são incluídos nas exportações PDF/DOCX, com nome do aluno e data em branco para preenchimento manual. A geração aceita selecionar vários tópicos da matéria para compor um único material. Pré-promptos e cabeçalhos podem ser editados e excluídos. Cadastro, login, matérias por ano letivo, upload e exclusão de ementas, extração automática, edição e exclusão de tópicos, pré-promptos e geração de roteiros, atividades e provas usam o banco. As gerações são validadas antes de salvar; provas incluem versões A/B, gabarito comentado e rubrica. A leitura automática de respostas manuscritas e correção por IA ainda não estão implementadas.

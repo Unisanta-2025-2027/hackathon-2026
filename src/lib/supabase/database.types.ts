@@ -22,23 +22,10 @@ export type Database = {
         id: string;
         professor_id: string;
         nome: string;
-        descricao: string | null;
         ano_letivo: number;
         criado_em: string;
         atualizado_em: string;
       }, "professor_id" | "nome">;
-      turmas: Table<{
-        id: string;
-        professor_id: string;
-        materia_id: string;
-        nome: string;
-        turno: string | null;
-        semestre: number | null;
-        ano_letivo: number;
-        quantidade_alunos: number | null;
-        criado_em: string;
-        atualizado_em: string;
-      }, "professor_id" | "materia_id" | "nome">;
       ementas: Table<{
         id: string;
         professor_id: string;
@@ -84,6 +71,7 @@ export type Database = {
         layout_compacto: boolean;
         familia_fonte: string;
         tamanho_fonte: number;
+        modelo_pontuacao: "igualitaria" | "ponderada";
         tipos_artefato: Database["public"]["Enums"]["tipo_artefato"][];
         ativo: boolean;
         criado_em: string;
@@ -93,7 +81,6 @@ export type Database = {
         id: string;
         professor_id: string;
         materia_id: string;
-        turma_id: string | null;
         ementa_id: string | null;
         pre_prompto_id: string | null;
         tipo: Database["public"]["Enums"]["tipo_artefato"];
@@ -136,7 +123,23 @@ export type Database = {
       }, "professor_id" | "artefato_id">;
     };
     Views: Record<string, never>;
-    Functions: Record<string, never>;
+    Functions: {
+      substituir_ementa_com_topicos: {
+        Args: {
+          p_materia_id: string;
+          p_titulo: string;
+          p_periodo: string | null;
+          p_ano_letivo: number;
+          p_caminho_arquivo: string;
+          p_nome_arquivo: string;
+          p_tipo_mime: string;
+          p_tamanho_arquivo_bytes: number;
+          p_texto_extraido: string | null;
+          p_topicos: Json;
+        };
+        Returns: string;
+      };
+    };
     Enums: {
       tipo_artefato: "roteiro_aula" | "atividade" | "prova";
       situacao_artefato: "rascunho" | "gerado" | "editado" | "arquivado";
