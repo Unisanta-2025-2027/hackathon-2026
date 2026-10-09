@@ -12,14 +12,6 @@ export type ActionResult<T = undefined> =
   | { data: null; error: string };
 
 export type SubjectRecord = { id: string; nome: string; ano_letivo: number };
-export type ClassRecord = {
-  id: string;
-  materia_id: string;
-  nome: string;
-  turno: string | null;
-  semestre: number | null;
-  ano_letivo: number;
-};
 export type SyllabusRecord = {
   id: string;
   materia_id: string;
@@ -41,7 +33,6 @@ export type TopicRecord = {
   titulo: string;
   descricao: string | null;
   habilidades: string[];
-  situacao: "pendente" | "planejado" | "praticado" | "avaliado";
   roteiro: "Feito" | "Pendente" | "Não iniciado";
   atividade: "Feito" | "Pendente" | "Não iniciado";
   prova: "Feito" | "Pendente" | "Não iniciado";
@@ -64,7 +55,6 @@ export type TemplateRecord = {
 export type AppData = {
   professor: { id: string; nome_completo: string; nome_instituicao: string | null };
   materias: SubjectRecord[];
-  turmas: ClassRecord[];
   ementas: SyllabusRecord[];
   topicos: TopicRecord[];
   prePromptos: TemplateRecord[];
@@ -92,7 +82,6 @@ export async function carregarDados(): Promise<ActionResult<AppData | null>> {
   const [
     profileResult,
     subjectsResult,
-    classesResult,
     syllabiResult,
     topicsResult,
     templatesResult,
@@ -101,9 +90,8 @@ export async function carregarDados(): Promise<ActionResult<AppData | null>> {
   ] = await Promise.all([
     supabase.from("professores").select("id,nome_completo,nome_instituicao").eq("id", user.id).single(),
     supabase.from("materias").select("id,nome,ano_letivo").order("nome"),
-    supabase.from("turmas").select("id,materia_id,nome,turno,semestre,ano_letivo").order("nome"),
     supabase.from("ementas").select("id,materia_id,titulo,nome_arquivo,criado_em,situacao_extracao,erro_extracao").order("criado_em", { ascending: false }),
-    supabase.from("topicos_ementa").select("id,ementa_id,materia_id,titulo,descricao,habilidades,situacao,ordem").order("ordem"),
+    supabase.from("topicos_ementa").select("id,ementa_id,materia_id,titulo,descricao,habilidades,ordem").order("ordem"),
     supabase.from("pre_promptos").select("id,materia_id,nome,descricao,ativo,tipos_artefato,nome_escola,nome_professor,instrucoes_fixas,colunas_layout,layout_compacto,familia_fonte,tamanho_fonte").order("criado_em"),
     supabase.from("artefatos").select("id,titulo,tipo,situacao"),
     supabase.from("artefatos_topicos").select("artefato_id,topico_id"),
@@ -112,7 +100,6 @@ export async function carregarDados(): Promise<ActionResult<AppData | null>> {
   const firstError = [
     profileResult.error,
     subjectsResult.error,
-    classesResult.error,
     syllabiResult.error,
     topicsResult.error,
     templatesResult.error,
@@ -145,7 +132,6 @@ export async function carregarDados(): Promise<ActionResult<AppData | null>> {
     data: {
       professor: profileResult.data,
       materias: subjectsResult.data ?? [],
-      turmas: classesResult.data ?? [],
       ementas: syllabiResult.data ?? [],
       topicos: (topicsResult.data ?? []).map((topic) => {
         const progress = progressByTopic.get(topic.id);
@@ -158,7 +144,6 @@ export async function carregarDados(): Promise<ActionResult<AppData | null>> {
           habilidades: Array.isArray(topic.habilidades)
             ? topic.habilidades.filter((habilidade): habilidade is string => typeof habilidade === "string")
             : [],
-          situacao: topic.situacao,
           roteiro: progress?.roteiro ?? "Não iniciado",
           atividade: progress?.atividade ?? "Não iniciado",
           prova: progress?.prova ?? "Não iniciado",
@@ -237,35 +222,6 @@ export async function criarMateria(input: { nome: string; anoLetivo: number }): 
     .from("materias")
     .insert({ professor_id: user.id, nome: input.nome.trim(), ano_letivo: input.anoLetivo })
     .select("id,nome,ano_letivo")
-    .single();
-  if (error) return { data: null, error: errorMessage(error) };
-  revalidatePath("/");
-  return { data, error: null };
-}
-
-export async function criarTurma(input: {
-  materiaId: string;
-  nome: string;
-  semestre: number | null;
-  turno: string | null;
-}): Promise<ActionResult<ClassRecord>> {
-  if (!isNonEmptyString(input?.materiaId) || !isNonEmptyString(input?.nome)) {
-    return { data: null, error: "Selecione a matéria e informe o nome da turma." };
-  }
-  if (input.semestre !== null && (!Number.isInteger(input.semestre) || input.semestre < 1 || input.semestre > 12)) {
-    return { data: null, error: "O semestre deve estar entre 1 e 12." };
-  }
-  const { supabase, user } = await usuarioAutenticado();
-  const { data, error } = await supabase
-    .from("turmas")
-    .insert({
-      professor_id: user.id,
-      materia_id: input.materiaId,
-      nome: input.nome.trim(),
-      semestre: input.semestre,
-      turno: input.turno?.trim() || null,
-    })
-    .select("id,materia_id,nome,turno,semestre,ano_letivo")
     .single();
   if (error) return { data: null, error: errorMessage(error) };
   revalidatePath("/");
@@ -460,24 +416,6 @@ export async function enviarEmenta(formData: FormData): Promise<ActionResult<Syl
   ].filter((message): message is string => Boolean(message)).join(" ") || null;
   revalidatePath("/");
   return { data: { topicosCriados: extraction.topicos.length, aviso }, error: null };
-}
-
-export async function atualizarSituacaoTopico(input: {
-  topicoId: string;
-  situacao: "pendente" | "planejado" | "praticado" | "avaliado";
-}): Promise<ActionResult> {
-  if (!isNonEmptyString(input?.topicoId) || !["pendente", "planejado", "praticado", "avaliado"].includes(input.situacao)) {
-    return { data: null, error: "Selecione um status válido para o tópico." };
-  }
-  const { supabase, user } = await usuarioAutenticado();
-  const { error } = await supabase
-    .from("topicos_ementa")
-    .update({ situacao: input.situacao })
-    .eq("id", input.topicoId)
-    .eq("professor_id", user.id);
-  if (error) return { data: null, error: errorMessage(error) };
-  revalidatePath("/");
-  return { data: undefined, error: null };
 }
 
 export async function atualizarTopico(input: {
@@ -726,7 +664,6 @@ function textoDoMaterial(value: unknown, heading = ""): string {
 
 export async function gerarMaterialComIA(input: {
   materiaId: string;
-  turmaId: string | null;
   topicoIds: string[];
   prePromptoId: string | null;
   cabecalhoId: string | null;
@@ -827,21 +764,6 @@ export async function gerarMaterialComIA(input: {
   }
   const trechoDocumento = documentTexts.join("\n\n").slice(0, 60_000);
 
-  let classroomName = "";
-  if (input.turmaId) {
-    const { data: classroom, error } = await supabase
-      .from("turmas")
-      .select("id,nome,semestre,ano_letivo,turno")
-      .eq("id", input.turmaId)
-      .eq("materia_id", subject.id)
-      .eq("professor_id", user.id)
-      .single();
-    if (error) return { data: null, error: errorMessage(error) };
-    classroomName = [classroom.nome, classroom.semestre ? `${classroom.semestre}º semestre` : null, classroom.turno, classroom.ano_letivo]
-      .filter(Boolean)
-      .join(" · ");
-  }
-
   let preset: {
     id: string;
     nome: string;
@@ -903,7 +825,6 @@ export async function gerarMaterialComIA(input: {
       professor: cabecalho.professor,
       instituicao: cabecalho.instituicao,
       materia: `${subject.nome} (${subject.ano_letivo})`,
-      turma: classroomName,
       topicos: selectedTopics.map((topic) => ({
         titulo: topic.titulo,
         descricao: topic.descricao ?? "",
@@ -960,7 +881,6 @@ export async function gerarMaterialComIA(input: {
     .insert({
       professor_id: user.id,
       materia_id: input.materiaId,
-      turma_id: input.turmaId,
       ementa_id: syllabusIds.length === 1 ? syllabusIds[0] : null,
       pre_prompto_id: header?.id ?? preset?.id ?? null,
       tipo: input.tipo,

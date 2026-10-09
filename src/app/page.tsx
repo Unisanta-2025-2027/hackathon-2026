@@ -32,14 +32,12 @@ import {
 } from "lucide-react";
 import {
   alterarPrePrompto,
-  atualizarSituacaoTopico,
   carregarDados,
   cadastrar,
   criarCorrecao,
   gerarMaterialComIA,
   criarMateria,
   criarPrePrompto,
-  criarTurma,
   salvarCabecalho,
   atualizarTopico,
   excluirEmenta,
@@ -67,13 +65,12 @@ export default function Home() {
   const [isPending, startTransition] = useTransition();
   const generationLockRef = useRef(false);
   const [selectedSubject, setSelectedSubject] = useState("");
-  const [selectedClass, setSelectedClass] = useState("");
   const [selectedHeaderId, setSelectedHeaderId] = useState("");
   const [filter, setFilter] = useState("Todos");
   const [query, setQuery] = useState("");
   const [topicsAscending, setTopicsSorted] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
-  const [managementMode, setManagementMode] = useState<"materia" | "turma" | null>(null);
+  const [managementMode, setManagementMode] = useState<"materia" | null>(null);
   const [editingTopic, setEditingTopic] = useState<TopicRecord | null>(null);
   const [topicToDelete, setTopicToDelete] = useState<TopicRecord | null>(null);
   const [syllabusToDelete, setSyllabusToDelete] = useState<SyllabusRecord | null>(null);
@@ -91,7 +88,7 @@ export default function Home() {
   const [isUploadingSyllabus, setIsUploadingSyllabus] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const refreshData = useCallback(async (preferredSubjectId?: string, preferredClassId?: string) => {
+  const refreshData = useCallback(async (preferredSubjectId?: string) => {
     const result = await carregarDados();
     if (result.error) {
       setFormError(result.error);
@@ -109,12 +106,6 @@ export default function Home() {
             ? current
             : result.data?.prePromptos.find((item) => item.materia_id === subjectId && item.ativo)?.id ?? "",
         );
-        const classId = (result.data.turmas.some(
-          (item) => item.id === preferredClassId && item.materia_id === subjectId,
-        )
-          ? preferredClassId
-          : result.data.turmas.find((item) => item.materia_id === subjectId)?.id) ?? "";
-        setSelectedClass(classId);
         setSelectedTopicIds((current) => {
           const availableTopics = result.data?.topicos.filter((topic) => topic.materia_id === subjectId) ?? [];
           const availableIds = new Set(availableTopics.map((topic) => topic.id));
@@ -133,7 +124,6 @@ export default function Home() {
   }, [refreshData]);
 
   const subject = appData?.materias.find((item) => item.id === selectedSubject);
-  const classroom = appData?.turmas.find((item) => item.id === selectedClass);
   const syllabus = appData?.ementas.find((item) => item.materia_id === selectedSubject);
   const topics = useMemo(
     () => appData?.topicos.filter((topic) => topic.materia_id === selectedSubject) ?? [],
@@ -146,8 +136,6 @@ export default function Home() {
     ?? (selectedHeaderId ? subjectHeaders.find((preset) => preset.ativo) : undefined);
   const topicSyllabus = appData?.ementas.find((item) => item.id === activeTopic?.ementa_id);
   const uploadedFile = topicSyllabus?.nome_arquivo ?? syllabus?.nome_arquivo ?? "";
-  const term = classroom?.semestre ? `${classroom.semestre}º Semestre` : `${classroom?.ano_letivo ?? new Date().getFullYear()}`;
-
   const totals = useMemo(() => {
     let planned = 0;
     let activities = 0;
@@ -178,12 +166,11 @@ export default function Home() {
     return topics
       .filter((topic) => {
         const matchesQuery = topic.titulo.toLowerCase().includes(normalizedQuery);
+        const completedArtifacts = [topic.roteiro, topic.atividade, topic.prova]
+          .filter((status) => status === "Feito").length;
         const matchesFilter =
           filter === "Todos" ||
-          (filter === "Em andamento" &&
-            (topic.roteiro === "Pendente" ||
-              topic.atividade === "Pendente" ||
-              topic.prova === "Pendente")) ||
+          (filter === "Em andamento" && completedArtifacts > 0 && completedArtifacts < 3) ||
           (filter === "Não iniciados" &&
             topic.roteiro === "Não iniciado" &&
             topic.atividade === "Não iniciado" &&
@@ -225,7 +212,7 @@ export default function Home() {
           notify("O envio da ementa não retornou um resultado válido.");
           return;
         }
-        await refreshData(selectedSubject, selectedClass);
+        await refreshData(selectedSubject);
         notify(
           result.data.aviso ??
             `Documento enviado e ${result.data.topicosCriados} tópicos identificados automaticamente.`,
@@ -239,8 +226,8 @@ export default function Home() {
   }
 
   function openGenerator(topicSelection?: string | string[], desiredArtifact?: Artifact) {
-    if (!selectedSubject || !selectedClass || !topics.length) {
-      notify("Cadastre uma matéria, turma e tópico antes de preparar um material.");
+    if (!selectedSubject || !topics.length) {
+      notify("Cadastre uma matéria e um tópico antes de preparar um material.");
       return;
     }
     const requestedIds = Array.isArray(topicSelection) ? topicSelection : topicSelection ? [topicSelection] : selectedTopicIds;
@@ -267,7 +254,6 @@ export default function Home() {
       try {
         const result = await gerarMaterialComIA({
           materiaId: subject.id,
-          turmaId: classroom?.materia_id === subject.id ? classroom.id : null,
           topicoIds: topicIds,
           prePromptoId: activePreset?.id ?? null,
           cabecalhoId: selectedHeader?.id ?? null,
@@ -279,7 +265,7 @@ export default function Home() {
         }
         setGeneratedMaterial(result.data);
         setModalOpen(false);
-        await refreshData(subject.id, classroom?.id);
+        await refreshData(subject.id);
         notify("Material pedagógico gerado e salvo.");
       } catch {
         setGenerationError("Ocorreu um erro inesperado ao gerar o material. Verifique sua conexão e tente novamente.");
@@ -300,7 +286,7 @@ export default function Home() {
         return;
       }
       setPresetName("");
-      await refreshData(selectedSubject, selectedClass);
+      await refreshData(selectedSubject);
       notify("Pré-prompto salvo no banco.");
     });
   }
@@ -316,7 +302,7 @@ export default function Home() {
       notify(result.error);
       return;
     }
-    await refreshData(selectedSubject, selectedClass);
+    await refreshData(selectedSubject);
     notify("Pré-prompto atualizado.");
   }
 
@@ -331,7 +317,7 @@ export default function Home() {
       if (presetToDelete.cabecalho && selectedHeaderId === presetToDelete.id) setSelectedHeaderId("");
       const removedName = presetToDelete.nome;
       setPresetToDelete(null);
-      await refreshData(selectedSubject, selectedClass);
+      await refreshData(selectedSubject);
       notify(`${presetToDelete.cabecalho ? "Cabeçalho" : "Pré-prompto"} “${removedName}” excluído.`);
     });
   }
@@ -353,7 +339,7 @@ export default function Home() {
       return;
     }
     setSelectedHeaderId(result.data.id);
-    await refreshData(selectedSubject, selectedClass);
+    await refreshData(selectedSubject);
     notify("Cabeçalho salvo para esta matéria.");
   }
 
@@ -374,45 +360,17 @@ export default function Home() {
       notify("O cabeçalho não foi atualizado.");
       return;
     }
-    await refreshData(selectedSubject, selectedClass);
+    await refreshData(selectedSubject);
     notify("Cabeçalho atualizado.");
-  }
-
-  async function createSubjectAndClass(formData: FormData) {
-    const subjectName = String(formData.get("materia") ?? "").trim();
-    const className = String(formData.get("turma") ?? "").trim();
-    const year = Number(formData.get("anoLetivo"));
-    const semesterValue = String(formData.get("semestre") ?? "");
-    const semester = semesterValue ? Number(semesterValue) : null;
-    const shift = String(formData.get("turno") ?? "").trim() || null;
-    if (!subjectName || !className) {
-      notify("Informe o nome da matéria e da turma.");
-      return;
-    }
-    startTransition(async () => {
-      const subjectResult = await criarMateria({ nome: subjectName, anoLetivo: year });
-      if (subjectResult.error || !subjectResult.data) {
-        notify(subjectResult.error ?? "Não foi possível criar a matéria.");
-        return;
-      }
-      const createdSubject = subjectResult.data;
-      const classResult = await criarTurma({ materiaId: createdSubject.id, nome: className, semestre: semester, turno: shift });
-      if (classResult.error || !classResult.data) {
-        await refreshData(createdSubject.id);
-        notify(`Matéria criada, mas a turma falhou: ${classResult.error ?? "erro inesperado"}`);
-        return;
-      }
-      const createdClass = classResult.data;
-      setSelectedSubject(createdSubject.id);
-      setSelectedClass(createdClass.id);
-      await refreshData(createdSubject.id, createdClass.id);
-      notify("Matéria e turma criadas.");
-    });
   }
 
   async function createSubjectOnly(formData: FormData) {
     const name = String(formData.get("materia") ?? "").trim();
     const year = Number(formData.get("anoLetivo"));
+    if (!name || !Number.isInteger(year)) {
+      notify("Informe o nome da matéria e um ano letivo válido.");
+      return;
+    }
     startTransition(async () => {
       const result = await criarMateria({ nome: name, anoLetivo: year });
       if (result.error || !result.data) {
@@ -421,27 +379,7 @@ export default function Home() {
       }
       setManagementMode(null);
       await refreshData(result.data.id);
-      notify("Matéria criada. Agora você pode adicionar uma turma.");
-    });
-  }
-
-  async function createClassForSelectedSubject(formData: FormData) {
-    const className = String(formData.get("turma") ?? "").trim();
-    const semesterValue = String(formData.get("semestre") ?? "");
-    startTransition(async () => {
-      const result = await criarTurma({
-        materiaId: selectedSubject,
-        nome: className,
-        semestre: semesterValue ? Number(semesterValue) : null,
-        turno: String(formData.get("turno") ?? "").trim() || null,
-      });
-      if (result.error || !result.data) {
-        notify(result.error ?? "Não foi possível criar a turma.");
-        return;
-      }
-      setManagementMode(null);
-      await refreshData(selectedSubject, result.data.id);
-      notify(`Turma adicionada à matéria ${subject?.nome}.`);
+      notify("Matéria criada.");
     });
   }
 
@@ -466,7 +404,7 @@ export default function Home() {
         return;
       }
       setEditingTopic(null);
-      await refreshData(selectedSubject, selectedClass);
+      await refreshData(selectedSubject);
       notify("Tópico atualizado.");
     });
   }
@@ -480,7 +418,7 @@ export default function Home() {
         return;
       }
       setTopicToDelete(null);
-      await refreshData(selectedSubject, selectedClass);
+      await refreshData(selectedSubject);
       notify("Tópico excluído. Os materiais salvos continuam na biblioteca, sem vínculo com esse tópico.");
     });
   }
@@ -494,7 +432,7 @@ export default function Home() {
         return;
       }
       setSyllabusToDelete(null);
-      await refreshData(selectedSubject, selectedClass);
+      await refreshData(selectedSubject);
       notify(result.data?.aviso ?? "Ementa, arquivo e tópicos vinculados excluídos.");
     });
   }
@@ -506,23 +444,7 @@ export default function Home() {
         notify(result.error);
         return;
       }
-      await refreshData(selectedSubject, selectedClass);
-    });
-  }
-
-  async function handleTopicStatus(topicId: string, status: string) {
-    if (!["pendente", "planejado", "praticado", "avaliado"].includes(status)) return;
-    startTransition(async () => {
-      const result = await atualizarSituacaoTopico({
-        topicoId: topicId,
-        situacao: status as TopicRecord["situacao"],
-      });
-      if (result.error) {
-        notify(result.error);
-        return;
-      }
-      await refreshData(selectedSubject, selectedClass);
-      notify("Status do tópico atualizado.");
+      await refreshData(selectedSubject);
     });
   }
 
@@ -550,54 +472,18 @@ export default function Home() {
     return <main className="auth-shell"><div className="auth-card onboarding-card">
       <div className="brand"><div className="brand-mark"><GraduationCap size={19} /></div><span>Pré<span className="brand-accent">Prompto</span></span></div>
       <span className="section-kicker">PRIMEIRO ACESSO</span><h1>Organize seu espaço de ensino</h1>
-      <p className="page-subtitle">Cadastre uma matéria e sua turma para começar a guardar ementas, tópicos e materiais.</p>
-      <form action={createSubjectAndClass} className="onboarding-form">
-        <label>Matéria<input name="materia" required placeholder="Ex.: Estrutura de Dados" /></label>
-        <label>Turma<input name="turma" required placeholder="Ex.: Turma A — Noturno" /></label>
-        <div className="form-row">
-          <label>Ano letivo<input name="anoLetivo" type="number" min="2000" max="2200" defaultValue={new Date().getFullYear()} required /></label>
-          <label>Semestre<select name="semestre" defaultValue=""><option value="">Selecione</option>{Array.from({ length: 12 }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}º semestre</option>)}</select></label>
-        </div>
-        <label>Turno<input name="turno" placeholder="Ex.: Noturno" /></label>
-        <button className="button button-primary" disabled={isPending}><Plus size={15} /> Criar matéria e turma</button>
+      <p className="page-subtitle">Cadastre sua primeira matéria para o ano letivo e comece a guardar ementas, tópicos e materiais.</p>
+      <form action={createSubjectOnly} className="onboarding-form">
+        <label>Nome da matéria<input name="materia" required maxLength={160} placeholder="Ex.: Estrutura de Dados" /></label>
+        <label>Ano letivo<input name="anoLetivo" type="number" min="2000" max="2200" defaultValue={new Date().getFullYear()} required /></label>
+        <button className="button button-primary" disabled={isPending}><Plus size={15} /> Criar matéria</button>
       </form>
       <button className="auth-signout" onClick={() => void sair().then(() => window.location.reload())}>Sair da conta</button>
     </div></main>;
   }
 
-  if (!subject || !classroom) {
-    const subjectId = subject?.id ?? "";
-    return <main className="auth-shell"><div className="auth-card onboarding-card">
-      <div className="brand"><div className="brand-mark"><GraduationCap size={19} /></div><span>Pré<span className="brand-accent">Prompto</span></span></div>
-      <span className="section-kicker">SUA PRIMEIRA TURMA</span><h1>Adicione uma turma</h1>
-      <p className="page-subtitle">A matéria {subject?.nome} já está pronta. Agora vincule sua primeira turma.</p>
-      <form action={async (formData) => {
-        const className = String(formData.get("turma") ?? "");
-        const semesterValue = String(formData.get("semestre") ?? "");
-        startTransition(async () => {
-          const result = await criarTurma({
-            materiaId: subjectId,
-            nome: className,
-            semestre: semesterValue ? Number(semesterValue) : null,
-            turno: String(formData.get("turno") ?? ""),
-          });
-          if (result.error || !result.data) {
-            notify(result.error ?? "Não foi possível criar a turma.");
-            return;
-          }
-          setSelectedClass(result.data.id);
-          await refreshData(subjectId, result.data.id);
-        });
-      }} className="onboarding-form">
-        <label>Turma<input name="turma" required placeholder="Ex.: Turma A — Noturno" /></label>
-        <div className="form-row">
-          <label>Semestre<select name="semestre" defaultValue=""><option value="">Selecione</option>{Array.from({ length: 12 }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}º semestre</option>)}</select></label>
-          <label>Turno<input name="turno" placeholder="Ex.: Noturno" /></label>
-        </div>
-        <button className="button button-primary" disabled={isPending}><Plus size={15} /> Criar turma</button>
-      </form>
-      <button className="auth-signout" onClick={() => void sair().then(() => window.location.reload())}>Sair da conta</button>
-    </div></main>;
+  if (!subject) {
+    return <main className="auth-shell"><div className="auth-card"><p>Carregando matéria…</p></div></main>;
   }
 
   function exportDocument(format: "PDF" | "DOCX", includeTeacherNotes = false) {
@@ -643,7 +529,6 @@ export default function Home() {
       ["Professor(a)", generatedMaterial.cabecalho.professor || "________________________________"],
       ["Tópico(s)", generatedMaterial.cabecalho.topicos.join(", ")],
       ["Nome do aluno", "________________________________"],
-      ["Turma", "________________"],
       ["Data", "____/____/______"],
     ];
 
@@ -706,7 +591,6 @@ export default function Home() {
             <select value={selectedSubject} onChange={(event) => {
               const id = event.target.value;
               setSelectedSubject(id);
-              setSelectedClass(appData.turmas.find((item) => item.materia_id === id)?.id ?? "");
               const firstTopic = appData.topicos.find((item) => item.materia_id === id);
               setSelectedTopicIds(firstTopic ? [firstTopic.id] : []);
               setSelectedHeaderId(appData.prePromptos.find((item) => item.materia_id === id && item.ativo)?.id ?? "");
@@ -744,8 +628,7 @@ export default function Home() {
           <button className="mobile-menu icon-button" aria-label="Abrir menu" onClick={() => setMobileMenuOpen(true)}><Menu size={20} /></button>
           <div className="breadcrumb"><span>Espaço de trabalho</span><span className="crumb-slash">/</span><strong>{screen === "overview" ? "Visão geral" : screen === "studio" ? "Esteira de criação" : "Pré-promptos"}</strong></div>
           <div className="topbar-actions">
-            <span className="semester-chip"><span className="status-dot" /> Ano letivo {classroom.ano_letivo}</span>
-            <button className="avatar avatar-small" aria-label={`Perfil de ${appData.professor.nome_completo}`}>{appData.professor.nome_completo.split(/\s+/).slice(0, 2).map((part) => part[0]).join("").toUpperCase()}</button>
+            <span className="year-chip"><span className="status-dot" /> Ano letivo {subject.ano_letivo}</span>
           </div>
         </header>
 
@@ -755,12 +638,10 @@ export default function Home() {
               <div className="page-heading">
                 <div>
                   <div className="heading-overline"><span className="heading-rule" /> SEU PLANEJAMENTO, EM UM SÓ LUGAR</div>
-                  <h1>{subject.nome}<span className="term-chip">{term}</span></h1>
-                  <p className="page-subtitle">Acompanhe o conteúdo do semestre e transforme cada tópico em material de aula.</p>
+                  <h1>{subject.nome}</h1>
+                  <p className="page-subtitle">Acompanhe seu plano de ensino e transforme cada tópico em material de aula.</p>
                 </div>
                 <div className="heading-actions">
-                  <label className="class-select"><GraduationCap size={15} /><select value={selectedClass} onChange={(event) => setSelectedClass(event.target.value)} aria-label="Selecionar turma">{!appData.turmas.some((item) => item.materia_id === subject.id) && <option value="">Sem turmas</option>}{appData.turmas.filter((item) => item.materia_id === subject.id).map((item) => <option key={item.id} value={item.id}>{item.nome}</option>)}</select><ChevronDown size={14} /></label>
-                  <button className="button button-outline" onClick={() => setManagementMode("turma")}><Plus size={15} /> Nova turma</button>
                   <button className="button button-outline" onClick={() => setManagementMode("materia")}><Plus size={15} /> Nova matéria</button>
                 </div>
               </div>
@@ -790,7 +671,7 @@ export default function Home() {
 
               <section className="overview-card tracker-summary">
                 <div className="section-heading summary-heading">
-                  <div><span className="section-kicker">ACOMPANHAMENTO</span><h2>Ementa Tracker <span className="heading-separator">/</span> Cobertura do semestre</h2></div>
+                  <div><span className="section-kicker">ACOMPANHAMENTO</span><h2>Ementa Tracker <span className="heading-separator">/</span> Cobertura da matéria</h2></div>
                   <span className="updated-label"><span className="live-dot" /> Atualizado agora</span>
                 </div>
                 <div className="coverage-line"><span>Progresso do planejamento</span><strong>{totals.coverage}%</strong></div>
@@ -814,25 +695,24 @@ export default function Home() {
                 </div>
                 <div className="table-scroll">
                   <table className="topic-table">
-                    <thead><tr><th className="number-col">Nº</th><th className="name-col">TÓPICO</th><th>ROTEIRO</th><th>ATIVIDADE</th><th>PROVA</th><th className="action-col">AÇÃO</th></tr></thead>
+                    <thead><tr><th className="name-col">TÓPICO</th><th>ROTEIRO</th><th>ATIVIDADE</th><th>PROVA</th><th className="action-col">AÇÃO</th></tr></thead>
                     <tbody>
                       {visibleTopics.map((topic) => (
                         <tr key={topic.id}>
-                          <td className="number-cell">{String(topics.indexOf(topic) + 1).padStart(2, "0")}</td>
-                          <td className="topic-name">{topic.titulo}<select className="topic-situation-select" aria-label={`Status de ${topic.titulo}`} value={topic.situacao} onChange={(event) => handleTopicStatus(topic.id, event.target.value)} disabled={isPending}><option value="pendente">Pendente</option><option value="planejado">Planejado</option><option value="praticado">Praticado</option><option value="avaliado">Avaliado</option></select></td>
+                          <td className="topic-name"><span className="number-cell">{String(topics.indexOf(topic) + 1).padStart(2, "0")}</span>{topic.titulo}</td>
                           <td><StatusPill status={topic.roteiro} /></td>
                           <td><StatusPill status={topic.atividade} /></td>
                           <td><StatusPill status={topic.prova} /></td>
                           <td><div className="topic-actions"><button className="generate-link" onClick={() => openGenerator(topic.id)}>Criar material <ArrowRight size={13} /></button><button className="icon-button topic-row-action" aria-label={`Editar tópico ${topic.titulo}`} title="Editar tópico" onClick={() => setEditingTopic(topic)}><Pencil size={15} /></button><button className="icon-button topic-row-action danger-action" aria-label={`Excluir tópico ${topic.titulo}`} title="Excluir tópico" onClick={() => setTopicToDelete(topic)}><Trash2 size={15} /></button></div></td>
                         </tr>
                       ))}
-                      {visibleTopics.length === 0 && <tr><td colSpan={6} className="empty-state">{topics.length ? "Nenhum tópico encontrado. Tente mudar a busca ou o filtro." : "Envie um documento-base para identificar os tópicos automaticamente."}</td></tr>}
+                      {visibleTopics.length === 0 && <tr><td colSpan={5} className="empty-state">{topics.length ? "Nenhum tópico encontrado. Tente mudar a busca ou o filtro." : "Envie um documento-base para identificar os tópicos automaticamente."}</td></tr>}
                     </tbody>
                   </table>
                 </div>
                 <div className="table-footer"><span>Exibindo <strong>{visibleTopics.length}</strong> de <strong>{topics.length}</strong> tópicos</span><div className="table-footer-actions"><button onClick={() => fileInputRef.current?.click()} className="text-link" disabled={isUploadingSyllabus}><Upload size={13} /> Enviar ementa</button><button onClick={() => openGenerator()} className="text-link">Criar material <ArrowRight size={14} /></button></div></div>
               </section>
-              <div className="bottom-note"><Sparkles size={14} /> Um documento-base, vários materiais prontos para sua turma.</div>
+              <div className="bottom-note"><Sparkles size={14} /> Um documento-base, vários materiais prontos para seus estudantes.</div>
             </>
           )}
 
@@ -909,7 +789,7 @@ export default function Home() {
                         <div className="header-fields-preview" aria-label="Campos fixos do cabeçalho">
                           <strong>Lista fixa impressa</strong>
                           <span>Instituição</span><span>Matéria: {subject?.nome}</span><span>Professor(a)</span>
-                          <span>Nome do aluno: ____________________</span><span>Turma: ____________</span><span>Data: ____/____/______</span>
+                          <span>Nome do aluno: ____________________</span><span>Data: ____/____/______</span>
                         </div>
                         <button className="button button-outline button-small" disabled={isPending}><Check size={14} /> Salvar cabeçalho</button>
                       </form>
@@ -925,7 +805,7 @@ export default function Home() {
                     <label>Professor(a)<input name="nomeProfessor" defaultValue={appData.professor.nome_completo} maxLength={160} placeholder="Nome do professor" /></label>
                     <button className="button button-primary" disabled={isPending}><Plus size={15} /> Adicionar</button>
                   </div>
-                  <p>Nome do aluno, turma e data permanecem em branco para preenchimento manual na aplicação da atividade ou prova.</p>
+                  <p>Nome do aluno e data permanecem em branco para preenchimento manual na aplicação da atividade ou prova.</p>
                 </form>
               </section>
               <div className="preset-footnote"><FileCheck2 size={15} /> Os padrões ativos serão considerados ao preparar o próximo material.</div>
@@ -973,27 +853,16 @@ export default function Home() {
       {managementMode && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setManagementMode(null); }}>
         <section className="generator-modal" role="dialog" aria-modal="true" aria-labelledby="management-title">
           <div className="modal-topline"><span className="modal-icon"><GraduationCap size={18} /></span><button className="icon-button" aria-label="Fechar" onClick={() => setManagementMode(null)}><X size={18} /></button></div>
-          <span className="section-kicker">GESTÃO ACADÊMICA</span>
-          {managementMode === "materia" ? <>
+          <span className="section-kicker">MATÉRIA</span>
+          <>
             <h2 id="management-title">Nova matéria</h2>
-            <p className="modal-description">Cadastre uma disciplina. Depois, adicione uma ou mais turmas a ela.</p>
+            <p className="modal-description">Cadastre uma matéria para o ano letivo.</p>
             <form action={createSubjectOnly} className="onboarding-form modal-form">
-      <label>Nome da matéria<input name="materia" required maxLength={160} placeholder="Ex.: Estrutura de Dados" /></label>
-      <label>Ano letivo<input name="anoLetivo" type="number" min="2000" max="2200" defaultValue={new Date().getFullYear()} required /></label>
-      <div className="modal-footer"><button type="button" className="button button-quiet" onClick={() => setManagementMode(null)}>Cancelar</button><button className="button button-primary" disabled={isPending}><Plus size={15} /> Criar matéria</button></div>
+              <label>Nome da matéria<input name="materia" required maxLength={160} placeholder="Ex.: Estrutura de Dados" /></label>
+              <label>Ano letivo<input name="anoLetivo" type="number" min="2000" max="2200" defaultValue={new Date().getFullYear()} required /></label>
+              <div className="modal-footer"><button type="button" className="button button-quiet" onClick={() => setManagementMode(null)}>Cancelar</button><button className="button button-primary" disabled={isPending}><Plus size={15} /> Criar matéria</button></div>
             </form>
-          </> : <>
-            <h2 id="management-title">Nova turma</h2>
-            <p className="modal-description">A turma será vinculada à matéria selecionada: <strong>{subject.nome}</strong>.</p>
-            <form action={createClassForSelectedSubject} className="onboarding-form modal-form">
-              <label>Nome da turma<input name="turma" required maxLength={120} placeholder="Ex.: Turma A — Noturno" /></label>
-              <div className="form-row">
-                <label>Semestre<select name="semestre" defaultValue=""><option value="">Selecione</option>{Array.from({ length: 12 }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}º semestre</option>)}</select></label>
-                <label>Turno<input name="turno" placeholder="Ex.: Noturno" /></label>
-              </div>
-              <div className="modal-footer"><button type="button" className="button button-quiet" onClick={() => setManagementMode(null)}>Cancelar</button><button className="button button-primary" disabled={isPending}><Plus size={15} /> Criar turma</button></div>
-            </form>
-          </>}
+          </>
           <p className="modal-disclaimer">O cadastro é salvo na sua conta do PréPrompto.</p>
         </section>
       </div>}
@@ -1014,7 +883,7 @@ export default function Home() {
           </> : <div className="generation-panel" aria-live="polite">
             <span className="section-kicker">GERAÇÃO EM ANDAMENTO</span>
             <h2 id="generator-title">Estamos criando seu material</h2>
-            <p className="generation-description">A IA está analisando o tópico e preparando um conteúdo alinhado à sua turma. Materiais completos podem levar alguns instantes.</p>
+            <p className="generation-description">A IA está analisando os tópicos e preparando um conteúdo alinhado à matéria. Materiais completos podem levar alguns instantes.</p>
             <div className="generation-progress" role="progressbar" aria-label="Geração do material em andamento" aria-valuetext="Aguarde enquanto o material é gerado">
               <span />
             </div>
@@ -1075,7 +944,7 @@ function AuthScreen({ error, onLogin, onSignup }: {
       <div className="brand auth-brand"><div className="brand-mark"><GraduationCap size={19} /></div><span>Pré<span className="brand-accent">Prompto</span></span></div>
       <span className="section-kicker">SEU ESPAÇO DE ENSINO</span>
       <h1>{isSignup ? "Crie sua conta" : "Bem-vindo de volta"}</h1>
-      <p className="page-subtitle">{isSignup ? "Comece a organizar matérias, turmas e materiais em um só lugar." : "Entre para acessar seu planejamento e documentos."}</p>
+      <p className="page-subtitle">{isSignup ? "Comece a organizar matérias e materiais em um só lugar." : "Entre para acessar seu planejamento e documentos."}</p>
       <form className="onboarding-form auth-form" onSubmit={handleSubmit}>
         {isSignup && <label>Nome completo<input name="nome" autoComplete="name" required maxLength={120} /></label>}
         <label>E-mail<input name="email" type="email" autoComplete="email" required /></label>

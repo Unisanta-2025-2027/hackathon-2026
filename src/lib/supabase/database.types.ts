@@ -22,23 +22,10 @@ export type Database = {
         id: string;
         professor_id: string;
         nome: string;
-        descricao: string | null;
         ano_letivo: number;
         criado_em: string;
         atualizado_em: string;
       }, "professor_id" | "nome">;
-      turmas: Table<{
-        id: string;
-        professor_id: string;
-        materia_id: string;
-        nome: string;
-        turno: string | null;
-        semestre: number | null;
-        ano_letivo: number;
-        quantidade_alunos: number | null;
-        criado_em: string;
-        atualizado_em: string;
-      }, "professor_id" | "materia_id" | "nome">;
       ementas: Table<{
         id: string;
         professor_id: string;
@@ -93,7 +80,6 @@ export type Database = {
         id: string;
         professor_id: string;
         materia_id: string;
-        turma_id: string | null;
         ementa_id: string | null;
         pre_prompto_id: string | null;
         tipo: Database["public"]["Enums"]["tipo_artefato"];
