@@ -48,6 +48,7 @@ export type TopicRecord = {
 };
 export type TemplateRecord = {
   id: string;
+  materia_id: string | null;
   nome: string;
   descricao: string | null;
   ativo: boolean;
@@ -61,7 +62,7 @@ export type TemplateRecord = {
   tamanho_fonte: number;
 };
 export type AppData = {
-  professor: { id: string; nome_completo: string };
+  professor: { id: string; nome_completo: string; nome_instituicao: string | null };
   materias: SubjectRecord[];
   turmas: ClassRecord[];
   ementas: SyllabusRecord[];
@@ -76,6 +77,10 @@ function errorMessage(error: { message: string }) {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function normalizarNome(value: string) {
+  return value.normalize("NFD").replace(/\p{Diacritic}/gu, "").trim().toLocaleLowerCase("pt-BR");
 }
 
 export async function carregarDados(): Promise<ActionResult<AppData | null>> {
@@ -94,12 +99,12 @@ export async function carregarDados(): Promise<ActionResult<AppData | null>> {
     artifactsResult,
     linksResult,
   ] = await Promise.all([
-    supabase.from("professores").select("id,nome_completo").eq("id", user.id).single(),
+    supabase.from("professores").select("id,nome_completo,nome_instituicao").eq("id", user.id).single(),
     supabase.from("materias").select("id,nome,ano_letivo").order("nome"),
     supabase.from("turmas").select("id,materia_id,nome,turno,semestre,ano_letivo").order("nome"),
     supabase.from("ementas").select("id,materia_id,titulo,nome_arquivo,criado_em,situacao_extracao,erro_extracao").order("criado_em", { ascending: false }),
     supabase.from("topicos_ementa").select("id,ementa_id,materia_id,titulo,descricao,habilidades,situacao,ordem").order("ordem"),
-    supabase.from("pre_promptos").select("id,nome,descricao,ativo,tipos_artefato,nome_escola,nome_professor,instrucoes_fixas,colunas_layout,layout_compacto,familia_fonte,tamanho_fonte").order("criado_em"),
+    supabase.from("pre_promptos").select("id,materia_id,nome,descricao,ativo,tipos_artefato,nome_escola,nome_professor,instrucoes_fixas,colunas_layout,layout_compacto,familia_fonte,tamanho_fonte").order("criado_em"),
     supabase.from("artefatos").select("id,titulo,tipo,situacao"),
     supabase.from("artefatos_topicos").select("artefato_id,topico_id"),
   ]);
@@ -367,6 +372,51 @@ export async function enviarEmenta(formData: FormData): Promise<ActionResult<Syl
     return { data: { topicosCriados: 0, aviso }, error: null };
   }
 
+  const [subjectResult, profileResult] = await Promise.all([
+    supabase.from("materias").select("id,nome,ano_letivo").eq("id", data.materia_id).eq("professor_id", user.id).single(),
+    supabase.from("professores").select("nome_completo,nome_instituicao").eq("id", user.id).single(),
+  ]);
+  let headerWarning: string | null = null;
+  let metadataWarning: string | null = null;
+  if (subjectResult.error || profileResult.error || !subjectResult.data || !profileResult.data) {
+    headerWarning = `Os tópicos foram identificados, mas não foi possível preparar o cabeçalho padrão: ${errorMessage(subjectResult.error ?? profileResult.error ?? { message: "perfil ou matéria não encontrado" })}`;
+  } else {
+    const subject = subjectResult.data;
+    const profile = profileResult.data;
+    const institution = (extraction.metadados.instituicao || profile.nome_instituicao || "").trim().slice(0, 160);
+    const schoolLookup = supabase
+      .from("pre_promptos")
+      .select("id")
+      .eq("professor_id", user.id)
+      .eq("materia_id", subject.id);
+    const { data: existingHeader, error: headerLookupError } = institution
+      ? await schoolLookup.eq("nome_escola", institution).limit(1).maybeSingle()
+      : await schoolLookup.is("nome_escola", null).limit(1).maybeSingle();
+    if (headerLookupError) {
+      headerWarning = `Os tópicos foram identificados, mas não foi possível verificar o cabeçalho padrão: ${errorMessage(headerLookupError)}`;
+    } else if (!existingHeader) {
+      const headerName = `Cabeçalho ${subject.nome.slice(0, 35)} (${subject.ano_letivo}) — ${(institution || "padrão").slice(0, 45)}`;
+      const { error: headerInsertError } = await supabase.from("pre_promptos").insert({
+        professor_id: user.id,
+        materia_id: subject.id,
+        nome: headerName,
+        descricao: "Cabeçalho fixo para materiais desta matéria.",
+        nome_escola: institution || null,
+        nome_professor: profile.nome_completo || null,
+        tipos_artefato: ["roteiro_aula", "atividade", "prova"],
+      });
+      if (headerInsertError) {
+        headerWarning = `Os tópicos foram identificados, mas o cabeçalho padrão não pôde ser salvo: ${errorMessage(headerInsertError)}`;
+      }
+    }
+    if (
+      extraction.metadados.materia &&
+      normalizarNome(extraction.metadados.materia) !== normalizarNome(subject.nome)
+    ) {
+      metadataWarning = `O documento menciona “${extraction.metadados.materia}”, mas está vinculado à matéria “${subject.nome}”; o cabeçalho foi mantido vinculado à matéria selecionada.`;
+    }
+  }
+
   const { error: topicsError } = await supabase.from("topicos_ementa").insert(
     extraction.topicos.map((topic, index) => ({
       professor_id: user.id,
@@ -389,7 +439,7 @@ export async function enviarEmenta(formData: FormData): Promise<ActionResult<Syl
       ? `Os tópicos foram identificados, mas não puderam ser salvos: ${message}. Também não foi possível registrar a falha: ${errorMessage(statusError)}`
       : `Os tópicos foram identificados, mas não puderam ser salvos: ${message}`;
     revalidatePath("/");
-    return { data: { topicosCriados: 0, aviso }, error: null };
+    return { data: { topicosCriados: 0, aviso: [aviso, headerWarning].filter(Boolean).join(" ") }, error: null };
   }
 
   const { error: completionError } = await supabase
@@ -401,9 +451,13 @@ export async function enviarEmenta(formData: FormData): Promise<ActionResult<Syl
     })
     .eq("id", data.id)
     .eq("professor_id", user.id);
-  const aviso = completionError
-    ? `Os tópicos foram gerados, mas o status da extração não pôde ser atualizado: ${errorMessage(completionError)}`
-    : null;
+  const aviso = [
+    completionError
+      ? `Os tópicos foram gerados, mas o status da extração não pôde ser atualizado: ${errorMessage(completionError)}`
+      : null,
+    headerWarning,
+    metadataWarning,
+  ].filter((message): message is string => Boolean(message)).join(" ") || null;
   revalidatePath("/");
   return { data: { topicosCriados: extraction.topicos.length, aviso }, error: null };
 }
@@ -518,11 +572,115 @@ export async function criarPrePrompto(input: { nome: string }): Promise<ActionRe
       nome: input.nome.trim(),
       tipos_artefato: ["roteiro_aula", "atividade", "prova"],
     })
-    .select("id,nome,descricao,ativo,tipos_artefato,nome_escola,nome_professor,instrucoes_fixas,colunas_layout,layout_compacto,familia_fonte,tamanho_fonte")
+    .select("id,materia_id,nome,descricao,ativo,tipos_artefato,nome_escola,nome_professor,instrucoes_fixas,colunas_layout,layout_compacto,familia_fonte,tamanho_fonte")
     .single();
   if (error) return { data: null, error: errorMessage(error) };
   revalidatePath("/");
   return { data, error: null };
+}
+
+export async function salvarCabecalho(input: {
+  id?: string;
+  materiaId: string;
+  nome: string;
+  nomeEscola: string;
+  nomeProfessor: string;
+}): Promise<ActionResult<TemplateRecord>> {
+  if (
+    !isNonEmptyString(input?.materiaId) ||
+    !isNonEmptyString(input?.nome) ||
+    input.nome.trim().length > 120 ||
+    (typeof input.nomeEscola !== "string" || input.nomeEscola.trim().length > 160) ||
+    (typeof input.nomeProfessor !== "string" || input.nomeProfessor.trim().length > 160)
+  ) {
+    return { data: null, error: "Confira o nome do cabeçalho e os campos de instituição e professor." };
+  }
+  if (input.id !== undefined && !isNonEmptyString(input.id)) {
+    return { data: null, error: "O cabeçalho selecionado é inválido." };
+  }
+
+  const { supabase, user } = await usuarioAutenticado();
+  const { data: subject, error: subjectError } = await supabase
+    .from("materias")
+    .select("id")
+    .eq("id", input.materiaId)
+    .eq("professor_id", user.id)
+    .single();
+  if (subjectError) return { data: null, error: errorMessage(subjectError) };
+  if (!subject) return { data: null, error: "A matéria selecionada não pertence à sua conta." };
+
+  const values = {
+    materia_id: subject.id,
+    nome: input.nome.trim(),
+    nome_escola: input.nomeEscola.trim() || null,
+    nome_professor: input.nomeProfessor.trim() || null,
+  };
+  const query = input.id
+    ? supabase.from("pre_promptos").update(values).eq("id", input.id).eq("professor_id", user.id).eq("materia_id", subject.id)
+    : supabase.from("pre_promptos").insert({
+        professor_id: user.id,
+        ...values,
+        descricao: "Cabeçalho fixo para materiais desta matéria.",
+        tipos_artefato: ["roteiro_aula", "atividade", "prova"],
+      });
+  const { data, error } = await query
+    .select("id,materia_id,nome,descricao,ativo,tipos_artefato,nome_escola,nome_professor,instrucoes_fixas,colunas_layout,layout_compacto,familia_fonte,tamanho_fonte")
+    .single();
+  if (error) return { data: null, error: errorMessage(error) };
+  revalidatePath("/");
+  return { data, error: null };
+}
+
+export async function alterarPrePromptoConteudo(input: {
+  id: string;
+  nome: string;
+  descricao: string;
+  instrucoesFixas: string;
+}): Promise<ActionResult> {
+  if (
+    !isNonEmptyString(input?.id) ||
+    !isNonEmptyString(input?.nome) ||
+    input.nome.trim().length > 120 ||
+    typeof input.descricao !== "string" ||
+    input.descricao.trim().length > 500 ||
+    typeof input.instrucoesFixas !== "string" ||
+    input.instrucoesFixas.trim().length > 4000
+  ) {
+    return { data: null, error: "Confira o nome, a descrição e as instruções do pré-prompto." };
+  }
+  const { supabase, user } = await usuarioAutenticado();
+  const { data, error } = await supabase
+    .from("pre_promptos")
+    .update({
+      nome: input.nome.trim(),
+      descricao: input.descricao.trim() || null,
+      instrucoes_fixas: input.instrucoesFixas.trim() || null,
+    })
+    .eq("id", input.id)
+    .eq("professor_id", user.id)
+    .is("materia_id", null)
+    .select("id")
+    .single();
+  if (error) return { data: null, error: errorMessage(error) };
+  if (!data) return { data: null, error: "O pré-prompto não foi encontrado." };
+  revalidatePath("/");
+  return { data: undefined, error: null };
+}
+
+export async function excluirPrePrompto(id: string): Promise<ActionResult> {
+  if (!isNonEmptyString(id)) return { data: null, error: "Selecione um pré-prompto válido para excluir." };
+  const { supabase, user } = await usuarioAutenticado();
+  const { data, error } = await supabase
+    .from("pre_promptos")
+    .delete()
+    .eq("id", id)
+    .eq("professor_id", user.id)
+    .select("id")
+    .single();
+  if (error) return { data: null, error: errorMessage(error) };
+  if (!data) return { data: null, error: "O pré-prompto não foi encontrado ou não pertence à sua conta." };
+  revalidatePath("/");
+  return { data: undefined, error: null };
 }
 
 export async function alterarPrePrompto(input: { id: string; ativo: boolean }): Promise<ActionResult> {
@@ -545,6 +703,12 @@ export type MaterialGerado = {
   titulo: string;
   tipo: TipoMaterial;
   conteudo: Record<string, unknown>;
+  cabecalho: {
+    instituicao: string;
+    materia: string;
+    professor: string;
+    topicos: string[];
+  };
 };
 
 function textoDoMaterial(value: unknown, heading = ""): string {
@@ -563,75 +727,105 @@ function textoDoMaterial(value: unknown, heading = ""): string {
 export async function gerarMaterialComIA(input: {
   materiaId: string;
   turmaId: string | null;
-  topicoId: string;
+  topicoIds: string[];
   prePromptoId: string | null;
+  cabecalhoId: string | null;
   tipo: TipoMaterial;
 }): Promise<ActionResult<MaterialGerado>> {
   if (
     !isNonEmptyString(input?.materiaId) ||
-    !isNonEmptyString(input.topicoId) ||
+    !Array.isArray(input.topicoIds) ||
+    input.topicoIds.length === 0 ||
+    !input.topicoIds.every(isNonEmptyString) ||
     !["roteiro_aula", "atividade", "prova"].includes(input.tipo)
   ) {
-    return { data: null, error: "Selecione a matéria, o tópico e o tipo de material." };
+    return { data: null, error: "Selecione a matéria, pelo menos um tópico e o tipo de material." };
   }
+  const topicIds = [...new Set(input.topicoIds)];
   const { supabase, user } = await usuarioAutenticado();
 
-  const { data: topic, error: topicError } = await supabase
+  const { data: topicRecords, error: topicError } = await supabase
     .from("topicos_ementa")
     .select("id,materia_id,ementa_id,titulo,descricao,habilidades")
-    .eq("id", input.topicoId)
+    .in("id", topicIds)
     .eq("materia_id", input.materiaId)
     .eq("professor_id", user.id)
-    .single();
+    .order("ordem");
   if (topicError) return { data: null, error: errorMessage(topicError) };
+  if (!topicRecords || topicRecords.length !== topicIds.length) {
+    return { data: null, error: "Um ou mais tópicos não pertencem à matéria selecionada." };
+  }
+  const topicById = new Map(topicRecords.map((item) => [item.id, item]));
+  const selectedTopics = topicIds.map((id) => topicById.get(id)).filter((item) => item !== undefined);
+  if (!selectedTopics.length) return { data: null, error: "Selecione pelo menos um tópico válido." };
 
-  const [subjectResult, syllabusResult, profileResult] = await Promise.all([
-    supabase.from("materias").select("id,nome,ano_letivo").eq("id", topic.materia_id).eq("professor_id", user.id).single(),
-    supabase.from("ementas").select("id,titulo,texto_extraido,periodo,caminho_arquivo,tipo_mime,nome_arquivo").eq("id", topic.ementa_id).eq("professor_id", user.id).single(),
+  const syllabusIds = [...new Set(selectedTopics.map((topic) => topic.ementa_id))];
+  const [subjectResult, syllabiResult, profileResult] = await Promise.all([
+    supabase.from("materias").select("id,nome,ano_letivo").eq("id", input.materiaId).eq("professor_id", user.id).single(),
+    supabase.from("ementas").select("id,titulo,texto_extraido,periodo,caminho_arquivo,tipo_mime,nome_arquivo").in("id", syllabusIds).eq("professor_id", user.id),
     supabase.from("professores").select("nome_completo,nome_instituicao").eq("id", user.id).single(),
   ]);
-  const contextError = subjectResult.error ?? syllabusResult.error ?? profileResult.error;
+  const contextError = subjectResult.error ?? syllabiResult.error ?? profileResult.error;
   if (contextError) return { data: null, error: errorMessage(contextError) };
-  if (!subjectResult.data || !syllabusResult.data || !profileResult.data) {
+  if (!subjectResult.data || !profileResult.data || !syllabiResult.data || syllabiResult.data.length !== syllabusIds.length) {
     return { data: null, error: "Não foi possível montar o contexto completo para a geração." };
   }
   const subject = subjectResult.data;
-  const syllabus = syllabusResult.data;
   const profile = profileResult.data;
-
-  let trechoDocumento = syllabus.texto_extraido?.slice(0, 16000) ?? "";
-  let documentoPdf: { mimeType: "application/pdf"; data: string } | undefined;
-  if (!trechoDocumento && syllabus.caminho_arquivo) {
+  const syllabiById = new Map(syllabiResult.data.map((item) => [item.id, item]));
+  const syllabusRecords = syllabusIds.map((id) => syllabiById.get(id)).filter((item) => item !== undefined);
+  const documentTexts: string[] = [];
+  const documentsPdf: { mimeType: "application/pdf"; data: string }[] = [];
+  let remainingTextCharacters = 60_000;
+  let totalPdfBytes = 0;
+  for (const syllabus of syllabusRecords) {
+    if (syllabus.texto_extraido?.trim()) {
+      const text = syllabus.texto_extraido.slice(0, remainingTextCharacters);
+      if (text.trim()) documentTexts.push(`Ementa: ${syllabus.titulo}\n${text}`);
+      remainingTextCharacters -= text.length;
+      continue;
+    }
+    if (!syllabus.caminho_arquivo) continue;
     const { data: sourceFile, error } = await supabase.storage
       .from("documentos-base")
       .download(syllabus.caminho_arquivo);
-    if (error) return { data: null, error: `Não foi possível ler o documento-base: ${error.message}` };
+    if (error) return { data: null, error: `Não foi possível ler o documento-base “${syllabus.titulo}”: ${error.message}` };
     if (sourceFile.size > 20 * 1024 * 1024) {
-      return { data: null, error: "Para usar o documento como contexto da IA, o arquivo deve ter no máximo 20 MB." };
+      return { data: null, error: "Para usar os documentos como contexto da IA, o total deve ter no máximo 20 MB." };
     }
 
     const sourceBytes = Buffer.from(await sourceFile.arrayBuffer());
     if (syllabus.tipo_mime === "application/pdf") {
       if (sourceBytes.subarray(0, 5).toString("ascii") !== "%PDF-") {
-        return { data: null, error: "O arquivo armazenado não parece ser um PDF válido." };
+        return { data: null, error: `O documento “${syllabus.titulo}” não parece ser um PDF válido.` };
       }
-      documentoPdf = { mimeType: "application/pdf", data: sourceBytes.toString("base64") };
+      totalPdfBytes += sourceBytes.length;
+      if (totalPdfBytes > 20 * 1024 * 1024) {
+        return { data: null, error: "Os documentos PDF selecionados excedem o limite total de 20 MB para a IA." };
+      }
+      documentsPdf.push({ mimeType: "application/pdf", data: sourceBytes.toString("base64") });
     } else if (syllabus.tipo_mime === "text/plain") {
-      trechoDocumento = new TextDecoder().decode(sourceBytes).slice(0, 16000);
+      const text = new TextDecoder().decode(sourceBytes).slice(0, remainingTextCharacters);
+      if (text.trim()) documentTexts.push(`Ementa: ${syllabus.titulo}\n${text}`);
+      remainingTextCharacters -= text.length;
     } else if (syllabus.tipo_mime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+      let extractedText: string;
       try {
-        const extracted = await mammoth.extractRawText({ buffer: sourceBytes });
-        trechoDocumento = extracted.value.slice(0, 16000);
+        extractedText = (await mammoth.extractRawText({ buffer: sourceBytes })).value;
       } catch {
-        return { data: null, error: "Não foi possível extrair o texto do DOCX. Verifique se o arquivo está íntegro." };
+        return { data: null, error: `Não foi possível extrair o texto do DOCX “${syllabus.titulo}”. Verifique se o arquivo está íntegro.` };
       }
-      if (!trechoDocumento.trim()) {
-        return { data: null, error: "O DOCX não contém texto legível para usar como referência da IA." };
+      const text = extractedText.slice(0, remainingTextCharacters);
+      if (!text.trim()) {
+        return { data: null, error: `O DOCX “${syllabus.titulo}” não contém texto legível para usar como referência da IA.` };
       }
+      documentTexts.push(`Ementa: ${syllabus.titulo}\n${text}`);
+      remainingTextCharacters -= text.length;
     } else if (syllabus.tipo_mime === "application/msword") {
-      return { data: null, error: "Para usar o documento na geração por IA, salve o arquivo DOC como DOCX ou PDF." };
+      return { data: null, error: `Para usar “${syllabus.titulo}” na geração por IA, salve o arquivo DOC como DOCX ou PDF.` };
     }
   }
+  const trechoDocumento = documentTexts.join("\n\n").slice(0, 60_000);
 
   let classroomName = "";
   if (input.turmaId) {
@@ -639,7 +833,7 @@ export async function gerarMaterialComIA(input: {
       .from("turmas")
       .select("id,nome,semestre,ano_letivo,turno")
       .eq("id", input.turmaId)
-      .eq("materia_id", topic.materia_id)
+      .eq("materia_id", subject.id)
       .eq("professor_id", user.id)
       .single();
     if (error) return { data: null, error: errorMessage(error) };
@@ -666,6 +860,7 @@ export async function gerarMaterialComIA(input: {
       .select("id,nome,descricao,nome_escola,nome_professor,instrucoes_fixas,colunas_layout,layout_compacto,familia_fonte,tamanho_fonte,ativo,tipos_artefato")
       .eq("id", input.prePromptoId)
       .eq("professor_id", user.id)
+      .is("materia_id", null)
       .single();
     if (error) return { data: null, error: errorMessage(error) };
     if (!data.ativo || !data.tipos_artefato.includes(input.tipo)) {
@@ -674,26 +869,56 @@ export async function gerarMaterialComIA(input: {
     preset = data;
   }
 
+  let header: {
+    id: string;
+    nome: string;
+    nome_escola: string | null;
+    nome_professor: string | null;
+    ativo: boolean;
+    tipos_artefato: TipoMaterial[];
+  } | null = null;
+  if (input.cabecalhoId) {
+    const { data, error } = await supabase
+      .from("pre_promptos")
+      .select("id,nome,nome_escola,nome_professor,ativo,tipos_artefato")
+      .eq("id", input.cabecalhoId)
+      .eq("professor_id", user.id)
+      .eq("materia_id", subject.id)
+      .single();
+    if (error) return { data: null, error: errorMessage(error) };
+    if (!data.ativo || !data.tipos_artefato.includes(input.tipo)) {
+      return { data: null, error: "O cabeçalho escolhido está inativo ou não se aplica a este material." };
+    }
+    header = data;
+  }
+  const cabecalho = {
+    instituicao: header?.nome_escola || profile.nome_instituicao || "",
+    materia: subject.nome,
+    professor: header?.nome_professor || profile.nome_completo,
+  };
+
   let resultado: Awaited<ReturnType<typeof gerarConteudoPedagogico>>;
   try {
     resultado = await gerarConteudoPedagogico(input.tipo, {
-      professor: preset?.nome_professor || profile.nome_completo,
-      instituicao: preset?.nome_escola || profile.nome_instituicao || "",
+      professor: cabecalho.professor,
+      instituicao: cabecalho.instituicao,
       materia: `${subject.nome} (${subject.ano_letivo})`,
       turma: classroomName,
-      topico: topic.titulo,
-      descricaoTopico: topic.descricao ?? "",
-      habilidades: Array.isArray(topic.habilidades)
-        ? topic.habilidades.filter((item): item is string => typeof item === "string")
-        : [],
-      ementa: [syllabus.titulo, syllabus.periodo].filter(Boolean).join(" · "),
+      topicos: selectedTopics.map((topic) => ({
+        titulo: topic.titulo,
+        descricao: topic.descricao ?? "",
+        habilidades: Array.isArray(topic.habilidades)
+          ? topic.habilidades.filter((item): item is string => typeof item === "string")
+          : [],
+      })),
+      ementa: syllabusRecords.map((item) => [item.titulo, item.periodo].filter(Boolean).join(" · ")).join("; "),
       trechoDocumento,
-      documentoPdfAnexado: Boolean(documentoPdf),
+      documentoPdfAnexado: documentsPdf.length > 0,
       instrucoesProfessor: preset?.instrucoes_fixas ?? "",
       layout: preset
         ? `${preset.colunas_layout} coluna(s), ${preset.layout_compacto ? "compacto" : "padrão"}, fonte ${preset.familia_fonte} ${preset.tamanho_fonte}pt`
         : "padrão legível, adequado para impressão escolar",
-    }, documentoPdf);
+    }, documentsPdf);
   } catch (error) {
     if (error instanceof Error && error.message === "IA_KEY_MISSING") {
       return { data: null, error: "A IA ainda não foi configurada. Adicione GEMINI_API_KEY às variáveis de ambiente do servidor e reinicie o app." };
@@ -736,8 +961,8 @@ export async function gerarMaterialComIA(input: {
       professor_id: user.id,
       materia_id: input.materiaId,
       turma_id: input.turmaId,
-      ementa_id: topic.ementa_id,
-      pre_prompto_id: preset?.id ?? null,
+      ementa_id: syllabusIds.length === 1 ? syllabusIds[0] : null,
+      pre_prompto_id: header?.id ?? preset?.id ?? null,
       tipo: input.tipo,
       situacao: "gerado",
       titulo,
@@ -745,19 +970,25 @@ export async function gerarMaterialComIA(input: {
       texto_formatado: textoDoMaterial(conteudo),
       gabarito: conteudo.gabaritoComentado ?? null,
       rubrica: conteudo.rubrica ?? null,
-      snapshot_pre_prompto: preset
-        ? {
+      snapshot_pre_prompto: {
+        ...(preset
+          ? {
             nome: preset.nome,
             descricao: preset.descricao,
-            nome_escola: preset.nome_escola,
-            nome_professor: preset.nome_professor,
             instrucoes_fixas: preset.instrucoes_fixas,
             colunas_layout: preset.colunas_layout,
             layout_compacto: preset.layout_compacto,
             familia_fonte: preset.familia_fonte,
             tamanho_fonte: preset.tamanho_fonte,
           }
-        : {},
+          : {}),
+        cabecalho: {
+          id: header?.id ?? null,
+          nome: header?.nome ?? null,
+          ...cabecalho,
+        },
+        topicos: selectedTopics.map((topic) => ({ id: topic.id, titulo: topic.titulo })),
+      },
       versao: null,
       modelo_geracao: resultado.modelo,
       metadados_geracao: { provedor: "Google Gemini", ...resultado.uso },
@@ -767,12 +998,14 @@ export async function gerarMaterialComIA(input: {
     .single();
   if (artifactError) return { data: null, error: errorMessage(artifactError) };
 
-  const { error: linkError } = await supabase.from("artefatos_topicos").insert({
-    professor_id: user.id,
-    artefato_id: artifact.id,
-    topico_id: input.topicoId,
-    materia_id: input.materiaId,
-  });
+  const { error: linkError } = await supabase.from("artefatos_topicos").insert(
+    selectedTopics.map((topic) => ({
+      professor_id: user.id,
+      artefato_id: artifact.id,
+      topico_id: topic.id,
+      materia_id: subject.id,
+    })),
+  );
   if (linkError) {
     const { error: cleanupError } = await supabase
       .from("artefatos")
@@ -784,7 +1017,16 @@ export async function gerarMaterialComIA(input: {
     }
     return { data: null, error: errorMessage(linkError) };
   }
-  return { data: { id: artifact.id, titulo, tipo: input.tipo, conteudo }, error: null };
+  return {
+    data: {
+      id: artifact.id,
+      titulo,
+      tipo: input.tipo,
+      conteudo,
+      cabecalho: { ...cabecalho, topicos: selectedTopics.map((topic) => topic.titulo) },
+    },
+    error: null,
+  };
 }
 
 const allowedResponseTypes = new Set([

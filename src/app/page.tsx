@@ -40,11 +40,14 @@ import {
   criarMateria,
   criarPrePrompto,
   criarTurma,
+  salvarCabecalho,
   atualizarTopico,
   excluirEmenta,
   excluirTopico,
+  excluirPrePrompto,
   entrar,
   enviarEmenta,
+  alterarPrePromptoConteudo,
   sair,
   type AppData,
   type MaterialGerado,
@@ -65,6 +68,7 @@ export default function Home() {
   const generationLockRef = useRef(false);
   const [selectedSubject, setSelectedSubject] = useState("");
   const [selectedClass, setSelectedClass] = useState("");
+  const [selectedHeaderId, setSelectedHeaderId] = useState("");
   const [filter, setFilter] = useState("Todos");
   const [query, setQuery] = useState("");
   const [topicsAscending, setTopicsSorted] = useState(true);
@@ -73,8 +77,9 @@ export default function Home() {
   const [editingTopic, setEditingTopic] = useState<TopicRecord | null>(null);
   const [topicToDelete, setTopicToDelete] = useState<TopicRecord | null>(null);
   const [syllabusToDelete, setSyllabusToDelete] = useState<SyllabusRecord | null>(null);
+  const [presetToDelete, setPresetToDelete] = useState<{ id: string; nome: string; cabecalho: boolean } | null>(null);
   const [artifact, setArtifact] = useState<Artifact>("Roteiro");
-  const [activeTopicId, setActiveTopicId] = useState("");
+  const [selectedTopicIds, setSelectedTopicIds] = useState<string[]>([]);
   const [generatedMaterial, setGeneratedMaterial] = useState<MaterialGerado | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationError, setGenerationError] = useState("");
@@ -99,17 +104,23 @@ export default function Home() {
           ? preferredSubjectId
           : result.data.materias[0]?.id) ?? "";
         setSelectedSubject(subjectId);
+        setSelectedHeaderId((current) =>
+          result.data?.prePromptos.some((item) => item.id === current && item.materia_id === subjectId)
+            ? current
+            : result.data?.prePromptos.find((item) => item.materia_id === subjectId && item.ativo)?.id ?? "",
+        );
         const classId = (result.data.turmas.some(
           (item) => item.id === preferredClassId && item.materia_id === subjectId,
         )
           ? preferredClassId
           : result.data.turmas.find((item) => item.materia_id === subjectId)?.id) ?? "";
         setSelectedClass(classId);
-        setActiveTopicId((current) =>
-          result.data?.topicos.some((topic) => topic.id === current)
-            ? current
-            : result.data?.topicos[0]?.id ?? "",
-        );
+        setSelectedTopicIds((current) => {
+          const availableTopics = result.data?.topicos.filter((topic) => topic.materia_id === subjectId) ?? [];
+          const availableIds = new Set(availableTopics.map((topic) => topic.id));
+          const selected = current.filter((id) => availableIds.has(id));
+          return selected.length ? selected : availableTopics[0] ? [availableTopics[0].id] : [];
+        });
       }
     }
     setLoading(false);
@@ -128,8 +139,11 @@ export default function Home() {
     () => appData?.topicos.filter((topic) => topic.materia_id === selectedSubject) ?? [],
     [appData?.topicos, selectedSubject],
   );
-  const activeTopic = topics.find((topic) => topic.id === activeTopicId);
+  const activeTopic = topics.find((topic) => selectedTopicIds.includes(topic.id));
   const presets = appData?.prePromptos ?? [];
+  const subjectHeaders = presets.filter((preset) => preset.materia_id === selectedSubject);
+  const selectedHeader = subjectHeaders.find((preset) => preset.id === selectedHeaderId && preset.ativo)
+    ?? (selectedHeaderId ? subjectHeaders.find((preset) => preset.ativo) : undefined);
   const topicSyllabus = appData?.ementas.find((item) => item.id === activeTopic?.ementa_id);
   const uploadedFile = topicSyllabus?.nome_arquivo ?? syllabus?.nome_arquivo ?? "";
   const term = classroom?.semestre ? `${classroom.semestre}º Semestre` : `${classroom?.ano_letivo ?? new Date().getFullYear()}`;
@@ -224,13 +238,14 @@ export default function Home() {
     });
   }
 
-  function openGenerator(topicId?: string, desiredArtifact?: Artifact) {
+  function openGenerator(topicSelection?: string | string[], desiredArtifact?: Artifact) {
     if (!selectedSubject || !selectedClass || !topics.length) {
       notify("Cadastre uma matéria, turma e tópico antes de preparar um material.");
       return;
     }
-    const topic = topicId ? topics.find((item) => item.id === topicId) : topics[0];
-    if (topic) setActiveTopicId(topic.id);
+    const requestedIds = Array.isArray(topicSelection) ? topicSelection : topicSelection ? [topicSelection] : selectedTopicIds;
+    const validIds = requestedIds.filter((id) => topics.some((item) => item.id === id));
+    setSelectedTopicIds(validIds.length ? validIds : topics[0] ? [topics[0].id] : []);
     if (desiredArtifact) setArtifact(desiredArtifact);
     setGenerationError("");
     setModalOpen(true);
@@ -238,13 +253,13 @@ export default function Home() {
 
   async function generateArtifact() {
     if (generationLockRef.current) return;
-    const topic = topics.find((item) => item.id === activeTopicId);
-    if (!topic || !subject) {
-      notify("Selecione um tópico válido da matéria.");
+    const topicIds = selectedTopicIds.filter((id) => topics.some((topic) => topic.id === id));
+    if (!topicIds.length || !subject) {
+      notify("Selecione pelo menos um tópico válido da matéria.");
       return;
     }
     const artifactType = artifact === "Roteiro" ? "roteiro_aula" : artifact === "Atividade" ? "atividade" : "prova";
-    const activePreset = presets.find((preset) => preset.ativo && preset.tipos_artefato.includes(artifactType));
+    const activePreset = presets.find((preset) => !preset.materia_id && preset.ativo && preset.tipos_artefato.includes(artifactType));
     generationLockRef.current = true;
     setGenerationError("");
     setIsGenerating(true);
@@ -253,8 +268,9 @@ export default function Home() {
         const result = await gerarMaterialComIA({
           materiaId: subject.id,
           turmaId: classroom?.materia_id === subject.id ? classroom.id : null,
-          topicoId: topic.id,
+          topicoIds: topicIds,
           prePromptoId: activePreset?.id ?? null,
+          cabecalhoId: selectedHeader?.id ?? null,
           tipo: artifactType,
         });
         if (result.error || !result.data) {
@@ -287,6 +303,79 @@ export default function Home() {
       await refreshData(selectedSubject, selectedClass);
       notify("Pré-prompto salvo no banco.");
     });
+  }
+
+  async function updatePreset(id: string, formData: FormData) {
+    const result = await alterarPrePromptoConteudo({
+      id,
+      nome: String(formData.get("nome") ?? ""),
+      descricao: String(formData.get("descricao") ?? ""),
+      instrucoesFixas: String(formData.get("instrucoesFixas") ?? ""),
+    });
+    if (result.error) {
+      notify(result.error);
+      return;
+    }
+    await refreshData(selectedSubject, selectedClass);
+    notify("Pré-prompto atualizado.");
+  }
+
+  async function confirmDeletePreset() {
+    if (!presetToDelete) return;
+    startTransition(async () => {
+      const result = await excluirPrePrompto(presetToDelete.id);
+      if (result.error) {
+        notify(result.error);
+        return;
+      }
+      if (presetToDelete.cabecalho && selectedHeaderId === presetToDelete.id) setSelectedHeaderId("");
+      const removedName = presetToDelete.nome;
+      setPresetToDelete(null);
+      await refreshData(selectedSubject, selectedClass);
+      notify(`${presetToDelete.cabecalho ? "Cabeçalho" : "Pré-prompto"} “${removedName}” excluído.`);
+    });
+  }
+
+  async function addHeader(formData: FormData) {
+    if (!selectedSubject) return;
+    const result = await salvarCabecalho({
+      materiaId: selectedSubject,
+      nome: String(formData.get("nome") ?? ""),
+      nomeEscola: String(formData.get("nomeEscola") ?? ""),
+      nomeProfessor: String(formData.get("nomeProfessor") ?? ""),
+    });
+    if (result.error) {
+      notify(result.error);
+      return;
+    }
+    if (!result.data) {
+      notify("O cabeçalho não foi salvo.");
+      return;
+    }
+    setSelectedHeaderId(result.data.id);
+    await refreshData(selectedSubject, selectedClass);
+    notify("Cabeçalho salvo para esta matéria.");
+  }
+
+  async function updateHeader(id: string, formData: FormData) {
+    if (!selectedSubject) return;
+    const result = await salvarCabecalho({
+      id,
+      materiaId: selectedSubject,
+      nome: String(formData.get("nome") ?? ""),
+      nomeEscola: String(formData.get("nomeEscola") ?? ""),
+      nomeProfessor: String(formData.get("nomeProfessor") ?? ""),
+    });
+    if (result.error) {
+      notify(result.error);
+      return;
+    }
+    if (!result.data) {
+      notify("O cabeçalho não foi atualizado.");
+      return;
+    }
+    await refreshData(selectedSubject, selectedClass);
+    notify("Cabeçalho atualizado.");
   }
 
   async function createSubjectAndClass(formData: FormData) {
@@ -548,6 +637,15 @@ export default function Home() {
     }
     const paragraphs = flattenMaterial(contentForExport);
     const filename = title.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-").replaceAll(/^-|-$/g, "");
+    const headerRows = [
+      ["Instituição", generatedMaterial.cabecalho.instituicao || "________________________________"],
+      ["Matéria", generatedMaterial.cabecalho.materia || "________________________________"],
+      ["Professor(a)", generatedMaterial.cabecalho.professor || "________________________________"],
+      ["Tópico(s)", generatedMaterial.cabecalho.topicos.join(", ")],
+      ["Nome do aluno", "________________________________"],
+      ["Turma", "________________"],
+      ["Data", "____/____/______"],
+    ];
 
     if (format === "PDF") {
       const printWindow = window.open("", "_blank", "width=900,height=720");
@@ -560,7 +658,10 @@ export default function Home() {
           ? `<h2>${escapeHtml(paragraph.text)}</h2>`
           : `<p>${escapeHtml(paragraph.text)}</p>`,
       ).join("");
-      printWindow.document.write(`<html lang="pt-BR"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font:14px Arial,sans-serif;color:#24242a;max-width:760px;margin:48px auto;line-height:1.55}header{border-bottom:2px solid #6a5ae0;padding-bottom:16px;margin-bottom:22px}header small{color:#777}h1{font-size:23px;margin:20px 0 6px}h2{font-size:15px;margin-top:25px;color:#5146ac}p{margin:8px 0}.questions{columns:2;column-gap:28px}@media print{body{margin:20mm auto}}</style></head><body><header><strong>PréPrompto</strong><small> · Material didático</small></header><h1>${escapeHtml(title)}</h1><div class="questions">${body}</div><script>window.onload=()=>window.print()</script></body></html>`);
+      const header = headerRows.map(([label, value]) =>
+        `<div class="header-field"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</div>`,
+      ).join("");
+      printWindow.document.write(`<html lang="pt-BR"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font:14px Arial,sans-serif;color:#24242a;max-width:760px;margin:48px auto;line-height:1.55}.school-header{border:1px solid #777;padding:14px 16px;margin-bottom:22px}.header-field{min-height:23px}h1{font-size:23px;margin:20px 0 6px}h2{font-size:15px;margin-top:25px;color:#5146ac}p{margin:8px 0}.questions{columns:2;column-gap:28px}@media print{body{margin:20mm auto}}</style></head><body><header class="school-header">${header}</header><h1>${escapeHtml(title)}</h1><div class="questions">${body}</div><script>window.onload=()=>window.print()</script></body></html>`);
       printWindow.document.close();
       notify("Visualização pronta. Escolha “Salvar como PDF” na janela de impressão.");
       return;
@@ -568,6 +669,8 @@ export default function Home() {
 
     const xmlEscape = (value: string) => escapeHtml(value).replaceAll("&apos;", "&apos;");
     const documentParagraphs = [
+      ...headerRows.map(([label, value]) => `<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>${xmlEscape(label)}: </w:t></w:r><w:r><w:t xml:space="preserve">${xmlEscape(value)}</w:t></w:r></w:p>`),
+      `<w:p/>`,
       `<w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>${xmlEscape(title)}</w:t></w:r></w:p>`,
       ...paragraphs.map((paragraph) => `<w:p>${paragraph.heading ? `<w:pPr><w:pStyle w:val="Heading2"/></w:pPr>` : ""}<w:r><w:t xml:space="preserve">${xmlEscape(paragraph.text)}</w:t></w:r></w:p>`),
       `<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720"/></w:sectPr>`,
@@ -604,7 +707,9 @@ export default function Home() {
               const id = event.target.value;
               setSelectedSubject(id);
               setSelectedClass(appData.turmas.find((item) => item.materia_id === id)?.id ?? "");
-              setActiveTopicId(appData.topicos.find((item) => item.materia_id === id)?.id ?? "");
+              const firstTopic = appData.topicos.find((item) => item.materia_id === id);
+              setSelectedTopicIds(firstTopic ? [firstTopic.id] : []);
+              setSelectedHeaderId(appData.prePromptos.find((item) => item.materia_id === id && item.ativo)?.id ?? "");
             }}>
               {appData.materias.map((item) => <option key={item.id} value={item.id}>{item.nome}</option>)}
             </select>
@@ -734,8 +839,9 @@ export default function Home() {
           {screen === "studio" && (
             <StudioScreen
               topics={topics}
-              selectedTopic={topics.some((item) => item.id === activeTopicId) ? activeTopicId : topics[0]?.id ?? ""}
-              onSelectedTopic={setActiveTopicId}
+              selectedTopics={topics.filter((item) => selectedTopicIds.includes(item.id))}
+              selectedTopicIds={selectedTopicIds}
+              onSelectedTopics={setSelectedTopicIds}
               uploadedFile={uploadedFile}
               isUploadingSyllabus={isUploadingSyllabus}
               syllabusExtractionError={syllabus?.situacao_extracao === "falhou" ? syllabus.erro_extracao : null}
@@ -760,12 +866,20 @@ export default function Home() {
                 <span className="intro-decoration"><Sparkles size={42} /></span>
               </div>
               <div className="preset-list">
-                {presets.map((preset, index) => {
+                {presets.filter((preset) => !preset.materia_id).map((preset, index) => {
                   const PresetIcon = [FileText, BookOpen, ClipboardCheck][index % 3];
                   return <article className="preset-card" key={preset.id}>
-                    <div className="preset-card-icon"><PresetIcon size={19} /></div>
-                    <div className="preset-card-copy"><h3>{preset.nome}</h3><p>{preset.descricao || "Padrão personalizado para seus materiais"}</p><span className="preset-tag">APLICADO A ROTEIROS, ATIVIDADES E PROVAS</span></div>
-                    <button className={`toggle ${preset.ativo ? "toggle-on" : ""}`} role="switch" aria-checked={preset.ativo} aria-label={`Ativar ${preset.nome}`} onClick={() => togglePreset(preset.id, !preset.ativo)} disabled={isPending}><span /></button>
+                    <div className="preset-card-heading">
+                      <div className="preset-card-icon"><PresetIcon size={19} /></div>
+                      <div className="preset-card-copy"><h3>{preset.nome}</h3><p>{preset.descricao || "Padrão personalizado para seus materiais"}</p><span className="preset-tag">APLICADO A ROTEIROS, ATIVIDADES E PROVAS</span></div>
+                      <button className={`toggle ${preset.ativo ? "toggle-on" : ""}`} role="switch" aria-checked={preset.ativo} aria-label={`Ativar ${preset.nome}`} onClick={() => togglePreset(preset.id, !preset.ativo)} disabled={isPending}><span /></button>
+                    </div>
+                    <form action={async (formData) => updatePreset(preset.id, formData)} className="preset-edit-form">
+                      <label>Nome<input name="nome" defaultValue={preset.nome} maxLength={120} required /></label>
+                      <label>Descrição<input name="descricao" defaultValue={preset.descricao ?? ""} maxLength={500} /></label>
+                      <label>Instruções fixas<textarea name="instrucoesFixas" rows={3} defaultValue={preset.instrucoes_fixas ?? ""} maxLength={4000} placeholder="Preferências que a IA deve seguir ao gerar os materiais" /></label>
+                      <div className="preset-edit-actions"><button className="button button-outline button-small" disabled={isPending}><Check size={14} /> Salvar alterações</button><button type="button" className="button button-danger-outline button-small" onClick={() => setPresetToDelete({ id: preset.id, nome: preset.nome, cabecalho: false })}><Trash2 size={14} /> Excluir</button></div>
+                    </form>
                   </article>;
                 })}
               </div>
@@ -773,6 +887,47 @@ export default function Home() {
                 <div className="add-preset-copy"><h3>Crie seu próprio padrão</h3><p>Adicione uma regra que você costuma repetir ao preparar seus materiais.</p></div>
                 <div className="add-preset-form"><input value={presetName} onChange={(event) => setPresetName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") addPreset(); }} placeholder="Ex.: Questões no estilo ENADE" /><button className="button button-primary" onClick={addPreset} disabled={isPending}><Plus size={15} /> Salvar padrão</button></div>
               </div>
+              <section className="header-presets">
+                <div className="header-presets-heading">
+                  <div><span className="section-kicker">PADRÕES POR MATÉRIA</span><h2>Cabeçalhos fixos</h2></div>
+                  <span className="header-subject-name">{subject?.nome}</span>
+                </div>
+                <p className="page-subtitle">Cada escola pode ter seu próprio cabeçalho. O padrão criado na leitura da ementa já vem preenchido e pode ser ajustado.</p>
+                <div className="preset-list header-preset-list">
+                  {subjectHeaders.map((headerPreset) => (
+                    <article className="header-preset-card" key={headerPreset.id}>
+                      <div className="header-preset-title">
+                        <div><h3>{headerPreset.nome}</h3><p>{headerPreset.descricao || "Cabeçalho fixo para materiais desta matéria"}</p></div>
+                        <div className="header-preset-actions"><button className={`toggle ${headerPreset.ativo ? "toggle-on" : ""}`} role="switch" aria-checked={headerPreset.ativo} aria-label={`Ativar ${headerPreset.nome}`} onClick={() => togglePreset(headerPreset.id, !headerPreset.ativo)} disabled={isPending}><span /></button><button type="button" className="button button-danger-outline button-small" onClick={() => setPresetToDelete({ id: headerPreset.id, nome: headerPreset.nome, cabecalho: true })}><Trash2 size={14} /> Excluir</button></div>
+                      </div>
+                      <form action={async (formData) => updateHeader(headerPreset.id, formData)} className="header-edit-form">
+                        <label>Nome deste padrão<input name="nome" defaultValue={headerPreset.nome} maxLength={120} required /></label>
+                        <div className="form-row">
+                          <label>Instituição<input name="nomeEscola" defaultValue={headerPreset.nome_escola ?? ""} maxLength={160} placeholder="Nome da escola/faculdade" /></label>
+                          <label>Professor(a)<input name="nomeProfessor" defaultValue={headerPreset.nome_professor ?? appData.professor.nome_completo} maxLength={160} placeholder="Nome do professor" /></label>
+                        </div>
+                        <div className="header-fields-preview" aria-label="Campos fixos do cabeçalho">
+                          <strong>Lista fixa impressa</strong>
+                          <span>Instituição</span><span>Matéria: {subject?.nome}</span><span>Professor(a)</span>
+                          <span>Nome do aluno: ____________________</span><span>Turma: ____________</span><span>Data: ____/____/______</span>
+                        </div>
+                        <button className="button button-outline button-small" disabled={isPending}><Check size={14} /> Salvar cabeçalho</button>
+                      </form>
+                    </article>
+                  ))}
+                  {subjectHeaders.length === 0 && <p className="empty-state header-empty-state">Envie um documento-base desta matéria para criar o primeiro cabeçalho automaticamente, ou cadastre um abaixo.</p>}
+                </div>
+                <form action={addHeader} className="add-header-card">
+                  <h3>Adicionar cabeçalho para outra escola</h3>
+                  <div className="header-create-fields">
+                    <label>Nome do padrão<input name="nome" defaultValue={`Cabeçalho — ${subject?.nome ?? ""}`} maxLength={120} required /></label>
+                    <label>Instituição<input name="nomeEscola" maxLength={160} placeholder="Ex.: ETEC / Faculdade XYZ" /></label>
+                    <label>Professor(a)<input name="nomeProfessor" defaultValue={appData.professor.nome_completo} maxLength={160} placeholder="Nome do professor" /></label>
+                    <button className="button button-primary" disabled={isPending}><Plus size={15} /> Adicionar</button>
+                  </div>
+                  <p>Nome do aluno, turma e data permanecem em branco para preenchimento manual na aplicação da atividade ou prova.</p>
+                </form>
+              </section>
               <div className="preset-footnote"><FileCheck2 size={15} /> Os padrões ativos serão considerados ao preparar o próximo material.</div>
             </section>
           )}
@@ -805,6 +960,14 @@ export default function Home() {
           <span className="section-kicker">EXCLUIR DOCUMENTO-BASE</span><h2 id="delete-syllabus-title">Excluir esta ementa?</h2>
           <p className="modal-description"><strong>{syllabusToDelete.titulo}</strong>{syllabusToDelete.nome_arquivo ? ` (${syllabusToDelete.nome_arquivo})` : ""} e os {appData.topicos.filter((topic) => topic.ementa_id === syllabusToDelete.id).length} tópico(s) vinculados serão excluídos. O arquivo associado será removido, se houver. Materiais gerados ficam salvos, sem vínculo com os tópicos excluídos.</p>
           <div className="modal-footer"><button className="button button-quiet" onClick={() => setSyllabusToDelete(null)} disabled={isPending}>Cancelar</button><button className="button button-danger" onClick={confirmDeleteSyllabus} disabled={isPending}><Trash2 size={15} /> {isPending ? "Excluindo…" : "Excluir ementa"}</button></div>
+        </section>
+      </div>}
+      {presetToDelete && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (!isPending && event.target === event.currentTarget) setPresetToDelete(null); }}>
+        <section className="generator-modal confirm-delete-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-preset-title">
+          <div className="modal-topline"><span className="modal-icon delete-modal-icon"><Trash2 size={17} /></span><button className="icon-button" aria-label="Fechar confirmação" onClick={() => setPresetToDelete(null)} disabled={isPending}><X size={18} /></button></div>
+          <span className="section-kicker">EXCLUIR PADRÃO</span><h2 id="delete-preset-title">Excluir {presetToDelete.cabecalho ? "cabeçalho fixo" : "pré-prompto"}?</h2>
+          <p className="modal-description">O padrão <strong>{presetToDelete.nome}</strong> será excluído. Os materiais já gerados continuarão salvos com a cópia das preferências usada na geração.</p>
+          <div className="modal-footer"><button className="button button-quiet" onClick={() => setPresetToDelete(null)} disabled={isPending}>Cancelar</button><button className="button button-danger" onClick={confirmDeletePreset} disabled={isPending}><Trash2 size={15} /> {isPending ? "Excluindo…" : "Excluir padrão"}</button></div>
         </section>
       </div>}
       {managementMode && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setManagementMode(null); }}>
@@ -842,7 +1005,8 @@ export default function Home() {
             <div className="artifact-options">
               {(["Roteiro", "Atividade", "Prova"] as Artifact[]).map((option) => <button key={option} className={`artifact-option ${artifact === option ? "artifact-selected" : ""}`} onClick={() => setArtifact(option)}><span className="artifact-option-icon">{option === "Roteiro" ? <BookOpen size={18} /> : option === "Atividade" ? <FilePlus2 size={18} /> : <ClipboardCheck size={18} />}</span><span><strong>{option}</strong><small>{option === "Roteiro" ? "Plano de aula estruturado" : option === "Atividade" ? "Exercícios para praticar" : "Avaliação com gabarito"}</small></span>{artifact === option && <CheckCircle2 size={17} className="selected-check" />}</button>)}
             </div>
-            <label className="form-label">TÓPICO DA EMENTA<select value={activeTopicId} onChange={(event) => setActiveTopicId(event.target.value)}>{topics.map((topic) => <option key={topic.id} value={topic.id}>{topic.titulo}</option>)}</select><ChevronDown size={15} /></label>
+            <TopicSelectionList topics={topics} selectedTopicIds={selectedTopicIds} onSelectedTopics={setSelectedTopicIds} disabled={isGenerating} />
+            <label className="form-label">CABEÇALHO<select value={selectedHeader?.id ?? ""} onChange={(event) => setSelectedHeaderId(event.target.value)}><option value="">Cabeçalho do perfil</option>{subjectHeaders.filter((item) => item.ativo).map((item) => <option key={item.id} value={item.id}>{item.nome}{item.nome_escola ? ` · ${item.nome_escola}` : ""}</option>)}</select><ChevronDown size={15} /></label>
             <div className="modal-template"><div><span className="template-icon"><FileText size={16} /></span><span><strong>Padrão selecionado</strong><small>{presets.filter((preset) => preset.ativo).length} preferências serão aplicadas</small></span></div><button onClick={() => { setModalOpen(false); setScreen("presets"); }}>Editar</button></div>
             {generationError && <p className="generation-error" role="alert">{generationError}</p>}
             <div className="modal-footer"><button className="button button-quiet" onClick={() => setModalOpen(false)} disabled={isPending}>Cancelar</button><button className="button button-primary" onClick={generateArtifact} disabled={isPending}><Sparkles size={15} /> {isPending ? "Preparando…" : "Gerar material"}</button></div>
@@ -1071,17 +1235,47 @@ function concatenateBytes(parts: Uint8Array[]) {
   return result;
 }
 
-function StudioScreen({ topics, selectedTopic, onSelectedTopic, uploadedFile, isUploadingSyllabus, syllabusExtractionError, fileInputRef, onFile, onGenerate, onOpenPresets, onExport, provas }: {
+function TopicSelectionList({ topics, selectedTopicIds, onSelectedTopics, disabled = false }: {
   topics: TopicRecord[];
-  selectedTopic: string;
-  onSelectedTopic: (id: string) => void;
+  selectedTopicIds: string[];
+  onSelectedTopics: (ids: string[]) => void;
+  disabled?: boolean;
+}) {
+  return <fieldset className="topic-selection">
+    <legend>TÓPICOS DA EMENTA</legend>
+    <div className="topic-selection-list">
+      {topics.length ? topics.map((topic) => (
+        <label key={topic.id} className="topic-selection-option">
+          <input
+            type="checkbox"
+            checked={selectedTopicIds.includes(topic.id)}
+            disabled={disabled}
+            onChange={(event) => onSelectedTopics(
+              event.target.checked
+                ? [...selectedTopicIds, topic.id]
+                : selectedTopicIds.filter((id) => id !== topic.id),
+            )}
+          />
+          <span>{topic.titulo}</span>
+        </label>
+      )) : <span className="topic-selection-empty">Nenhum tópico disponível nesta matéria.</span>}
+    </div>
+    <span className="topic-selection-count">{selectedTopicIds.length} tópico(s) selecionado(s)</span>
+  </fieldset>;
+}
+
+function StudioScreen({ topics, selectedTopics, selectedTopicIds, onSelectedTopics, uploadedFile, isUploadingSyllabus, syllabusExtractionError, fileInputRef, onFile, onGenerate, onOpenPresets, onExport, provas }: {
+  topics: TopicRecord[];
+  selectedTopics: TopicRecord[];
+  selectedTopicIds: string[];
+  onSelectedTopics: (ids: string[]) => void;
   uploadedFile: string;
   isUploadingSyllabus: boolean;
   syllabusExtractionError: string | null;
   provas: AppData["provas"];
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   onFile: (event: ChangeEvent<HTMLInputElement>) => void;
-  onGenerate: (topicId?: string, artifact?: Artifact) => void;
+  onGenerate: (topicIds: string[], artifact?: Artifact) => void;
   onOpenPresets: () => void;
   onExport: (format: "PDF" | "DOCX", includeTeacherNotes?: boolean) => void;
 }) {
@@ -1112,9 +1306,9 @@ function StudioScreen({ topics, selectedTopic, onSelectedTopic, uploadedFile, is
         <div className="studio-card create-card">
           <div className="card-title-row"><div className="number-badge">02</div><div><span className="section-kicker">NOVO MATERIAL</span><h2>O que você quer criar?</h2></div></div>
           <div className="create-type-grid">{(["Roteiro", "Atividade", "Prova"] as Artifact[]).map((type) => <button key={type} className={`create-type ${selectedType === type ? "create-type-active" : ""}`} onClick={() => setSelectedType(type)}><span className="create-type-icon">{type === "Roteiro" ? <BookOpen size={20} /> : type === "Atividade" ? <FilePlus2 size={20} /> : <ClipboardCheck size={20} />}</span><strong>{type}</strong><span>{type === "Roteiro" ? "Plano de aula completo" : type === "Atividade" ? "Prática para a turma" : "Avaliação e gabarito"}</span>{selectedType === type && <CheckCircle2 size={16} className="type-check" />}</button>)}</div>
-          <div className="form-row"><label className="form-label">TÓPICO DA EMENTA<select value={selectedTopic} onChange={(event) => onSelectedTopic(event.target.value)}>{topics.map((topic) => <option key={topic.id} value={topic.id}>{topic.titulo}</option>)}</select><ChevronDown size={15} /></label><label className="form-label">LAYOUT DO MATERIAL<select defaultValue="Padrão escolar · 2 colunas"><option>Padrão escolar · 2 colunas</option><option>Folha de atividades</option><option>Plano de aula</option></select><ChevronDown size={15} /></label></div>
+          <div className="studio-topic-layout"><TopicSelectionList topics={topics} selectedTopicIds={selectedTopicIds} onSelectedTopics={onSelectedTopics} disabled={topics.length === 0} /><label className="form-label">LAYOUT DO MATERIAL<select defaultValue="Padrão escolar · 2 colunas"><option>Padrão escolar · 2 colunas</option><option>Folha de atividades</option><option>Plano de aula</option></select><ChevronDown size={15} /></label></div>
           <div className="presets-applied"><span className="applied-icon"><Settings2 size={15} /></span><span><strong>Seus pré-promptos ativos</strong><small>Preferências aplicáveis incorporadas ao material</small></span><button onClick={onOpenPresets}>Ver padrões <ArrowRight size={13} /></button></div>
-          <div className="studio-submit"><span><Sparkles size={15} /> Plano pedagógico pronto em poucos segundos</span><button className="button button-primary" onClick={() => onGenerate(selectedTopic, selectedType)}><Sparkles size={16} /> Gerar {selectedType.toLowerCase()} <ArrowRight size={15} /></button></div>
+          <div className="studio-submit"><span><Sparkles size={15} /> Plano pedagógico pronto em poucos segundos</span><button className="button button-primary" onClick={() => onGenerate(selectedTopicIds, selectedType)} disabled={!selectedTopicIds.length}><Sparkles size={16} /> Gerar {selectedType.toLowerCase()} <ArrowRight size={15} /></button></div>
         </div>
 
         <div className="studio-card correction-card">
@@ -1124,7 +1318,7 @@ function StudioScreen({ topics, selectedTopic, onSelectedTopic, uploadedFile, is
       </div>
 
       <aside className="studio-aside">
-        <div className="preview-card"><div className="preview-top"><span className="section-kicker">VISUALIZAÇÃO</span><span className="preview-dots">•••</span></div>        <div className="paper"><div className="paper-brand"><span className="paper-logo"><GraduationCap size={15} /></span><span>INSTITUIÇÃO DE ENSINO<small>Material didático</small></span></div><div className="paper-line" /><span className="paper-label">{selectedType.toUpperCase()}</span><h3>{topics.find((topic) => topic.id === selectedTopic)?.titulo ?? "Selecione um tópico"}</h3><p>Objetivos de aprendizagem e conteúdos para a sua turma.</p><div className="paper-section-title" /><div className="paper-line wide" /><div className="paper-line" /><div className="paper-question"><b>01.</b><span>Questão ou etapa do material preparada para seus alunos...</span></div><div className="paper-question"><b>02.</b><span>Desenvolva e explique sua resposta.</span></div><div className="paper-columns"><i /><i /></div><span className="paper-footer">PréPrompto · 2026</span></div><div className="export-row"><button className="button button-outline" onClick={() => onExport("PDF")}><FileText size={15} /> Exportar PDF</button><button className="button button-outline" onClick={() => onExport("DOCX")}><FileCheck2 size={15} /> Exportar DOCX</button></div></div>
+        <div className="preview-card"><div className="preview-top"><span className="section-kicker">VISUALIZAÇÃO</span><span className="preview-dots">•••</span></div>        <div className="paper"><div className="paper-brand"><span className="paper-logo"><GraduationCap size={15} /></span><span>INSTITUIÇÃO DE ENSINO<small>Material didático</small></span></div><div className="paper-line" /><span className="paper-label">{selectedType.toUpperCase()}</span><h3>{selectedTopics.length ? selectedTopics.map((topic) => topic.titulo).join(", ") : "Selecione um ou mais tópicos"}</h3><p>Objetivos de aprendizagem e conteúdos para a sua turma.</p><div className="paper-section-title" /><div className="paper-line wide" /><div className="paper-line" /><div className="paper-question"><b>01.</b><span>Questão ou etapa do material preparada para seus alunos...</span></div><div className="paper-question"><b>02.</b><span>Desenvolva e explique sua resposta.</span></div><div className="paper-columns"><i /><i /></div><span className="paper-footer">PréPrompto · 2026</span></div><div className="export-row"><button className="button button-outline" onClick={() => onExport("PDF")}><FileText size={15} /> Exportar PDF</button><button className="button button-outline" onClick={() => onExport("DOCX")}><FileCheck2 size={15} /> Exportar DOCX</button></div></div>
         <div className="tip-card"><span><Sparkles size={15} /></span><p><strong>Dica de professor</strong>Materiais em 2 colunas ajudam a economizar papel na hora de imprimir.</p></div>
       </aside>
     </div>
