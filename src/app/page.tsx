@@ -37,7 +37,6 @@ import {
   gerarMaterialComIA,
   criarMateria,
   criarPrePrompto,
-  criarTopico,
   criarTurma,
   entrar,
   enviarEmenta,
@@ -65,7 +64,6 @@ export default function Home() {
   const [topicsAscending, setTopicsSorted] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [managementMode, setManagementMode] = useState<"materia" | "turma" | null>(null);
-  const [topicModalOpen, setTopicModalOpen] = useState(false);
   const [artifact, setArtifact] = useState<Artifact>("Roteiro");
   const [activeTopicId, setActiveTopicId] = useState("");
   const [generatedMaterial, setGeneratedMaterial] = useState<MaterialGerado | null>(null);
@@ -76,6 +74,7 @@ export default function Home() {
   const [presetName, setPresetName] = useState("");
   const [formError, setFormError] = useState("");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [isUploadingSyllabus, setIsUploadingSyllabus] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const refreshData = useCallback(async (preferredSubjectId?: string, preferredClassId?: string) => {
@@ -181,6 +180,7 @@ export default function Home() {
   function handleFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
+    if (isUploadingSyllabus) return;
     if (!file || !selectedSubject) {
       if (!selectedSubject) notify("Crie ou selecione uma matéria antes de enviar a ementa.");
       return;
@@ -190,14 +190,28 @@ export default function Home() {
     formData.set("materiaId", selectedSubject);
     formData.set("titulo", file.name);
     formData.set("anoLetivo", String(subject?.ano_letivo ?? new Date().getFullYear()));
+    setIsUploadingSyllabus(true);
     startTransition(async () => {
-      const result = await enviarEmenta(formData);
-      if (result.error) {
-        notify(result.error);
-        return;
+      try {
+        const result = await enviarEmenta(formData);
+        if (result.error) {
+          notify(result.error);
+          return;
+        }
+        if (!result.data) {
+          notify("O envio da ementa não retornou um resultado válido.");
+          return;
+        }
+        await refreshData(selectedSubject, selectedClass);
+        notify(
+          result.data.aviso ??
+            `Documento enviado e ${result.data.topicosCriados} tópicos identificados automaticamente.`,
+        );
+      } catch (error) {
+        notify(error instanceof Error ? error.message : "Falha inesperada ao enviar a ementa.");
+      } finally {
+        setIsUploadingSyllabus(false);
       }
-      await refreshData(selectedSubject, selectedClass);
-      notify("Documento-base enviado com segurança.");
     });
   }
 
@@ -330,22 +344,6 @@ export default function Home() {
       setManagementMode(null);
       await refreshData(selectedSubject, result.data.id);
       notify(`Turma adicionada à matéria ${subject?.nome}.`);
-    });
-  }
-
-  async function createTopicFromForm(formData: FormData) {
-    const ementaId = String(formData.get("ementaId") ?? "");
-    const title = String(formData.get("titulo") ?? "");
-    const description = String(formData.get("descricao") ?? "");
-    startTransition(async () => {
-      const result = await criarTopico({ ementaId, titulo: title, descricao: description });
-      if (result.error) {
-        notify(result.error);
-        return;
-      }
-      setTopicModalOpen(false);
-      await refreshData(selectedSubject, selectedClass);
-      notify("Tópico adicionado à ementa.");
     });
   }
 
@@ -599,11 +597,11 @@ export default function Home() {
                 </div>
               </div>
 
-              <input ref={fileInputRef} type="file" accept=".pdf,.doc,.docx,.txt" className="sr-only" onChange={handleFile} />
-              <button className="upload-strip" onClick={() => fileInputRef.current?.click()}>
+              <input ref={fileInputRef} type="file" accept=".pdf,.docx,.txt" className="sr-only" onChange={handleFile} disabled={isUploadingSyllabus} />
+              <button className="upload-strip" onClick={() => fileInputRef.current?.click()} disabled={isUploadingSyllabus}>
                 <span className="upload-symbol"><CloudUpload size={21} /></span>
-                <span className="upload-copy"><strong>Adicionar ementa ou documento-base</strong><span>{isPending ? "Enviando arquivo para o armazenamento privado…" : uploadedFile ? <>Última ementa: <b>{uploadedFile}</b></> : "Selecione um PDF, DOCX ou TXT para armazenar na sua conta"}</span></span>
-                <span className="upload-action"><Upload size={14} /> Selecionar arquivo</span>
+                <span className="upload-copy"><strong>Adicionar ementa ou documento-base</strong><span>{isUploadingSyllabus ? "Enviando e identificando os tópicos com IA…" : syllabus?.situacao_extracao === "falhou" ? <>Documento salvo, mas a extração falhou: {syllabus.erro_extracao ?? "erro não identificado"}. Envie novamente para tentar outra vez.</> : uploadedFile ? <>Última ementa: <b>{uploadedFile}</b>{syllabus?.situacao_extracao === "concluido" ? " · tópicos extraídos" : ""}</> : "Selecione um PDF, DOCX ou TXT para armazenar na sua conta"}</span></span>
+                <span className="upload-action"><Upload size={14} /> {isUploadingSyllabus ? "Processando…" : "Selecionar arquivo"}</span>
               </button>
 
               <section className="overview-card tracker-summary">
@@ -644,11 +642,11 @@ export default function Home() {
                           <td><button className="generate-link" onClick={() => openGenerator(topic.id)}>Criar material <ArrowRight size={13} /></button></td>
                         </tr>
                       ))}
-                      {visibleTopics.length === 0 && <tr><td colSpan={6} className="empty-state">{topics.length ? "Nenhum tópico encontrado. Tente mudar a busca ou o filtro." : <>Esta ementa ainda não tem tópicos. <button className="text-link" onClick={() => setTopicModalOpen(true)}>Adicionar tópico</button></>}</td></tr>}
+                      {visibleTopics.length === 0 && <tr><td colSpan={6} className="empty-state">{topics.length ? "Nenhum tópico encontrado. Tente mudar a busca ou o filtro." : "Envie um documento-base para identificar os tópicos automaticamente."}</td></tr>}
                     </tbody>
                   </table>
                 </div>
-                <div className="table-footer"><span>Exibindo <strong>{visibleTopics.length}</strong> de <strong>{topics.length}</strong> tópicos</span><div className="table-footer-actions"><button onClick={() => setTopicModalOpen(true)} className="text-link"><Plus size={13} /> Adicionar tópico</button><button onClick={() => openGenerator()} className="text-link">Criar material <ArrowRight size={14} /></button></div></div>
+                <div className="table-footer"><span>Exibindo <strong>{visibleTopics.length}</strong> de <strong>{topics.length}</strong> tópicos</span><div className="table-footer-actions"><button onClick={() => fileInputRef.current?.click()} className="text-link" disabled={isUploadingSyllabus}><Upload size={13} /> Enviar ementa</button><button onClick={() => openGenerator()} className="text-link">Criar material <ArrowRight size={14} /></button></div></div>
               </section>
               <div className="bottom-note"><Sparkles size={14} /> Um documento-base, vários materiais prontos para sua turma.</div>
             </>
@@ -660,6 +658,8 @@ export default function Home() {
               selectedTopic={topics.some((item) => item.id === activeTopicId) ? activeTopicId : topics[0]?.id ?? ""}
               onSelectedTopic={setActiveTopicId}
               uploadedFile={uploadedFile}
+              isUploadingSyllabus={isUploadingSyllabus}
+              syllabusExtractionError={syllabus?.situacao_extracao === "falhou" ? syllabus.erro_extracao : null}
               fileInputRef={fileInputRef}
               onFile={handleFile}
               onGenerate={openGenerator}
@@ -725,18 +725,6 @@ export default function Home() {
             </form>
           </>}
           <p className="modal-disclaimer">O cadastro é salvo na sua conta do PréPrompto.</p>
-        </section>
-      </div>}
-      {topicModalOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setTopicModalOpen(false); }}>
-        <section className="generator-modal" role="dialog" aria-modal="true" aria-labelledby="topic-title">
-          <div className="modal-topline"><span className="modal-icon"><List size={18} /></span><button className="icon-button" aria-label="Fechar" onClick={() => setTopicModalOpen(false)}><X size={18} /></button></div>
-          <span className="section-kicker">EMENTA</span><h2 id="topic-title">Adicionar tópico</h2>
-          <form action={createTopicFromForm} className="onboarding-form modal-form">
-            <label>Ementa<select name="ementaId" required defaultValue={syllabus?.id ?? ""}>{appData.ementas.filter((item) => item.materia_id === subject.id).map((item) => <option key={item.id} value={item.id}>{item.titulo}</option>)}</select></label>
-            <label>Nome do tópico<input name="titulo" required maxLength={200} placeholder="Ex.: Estruturas de dados lineares" /></label>
-            <label>Descrição<textarea name="descricao" rows={3} placeholder="Habilidades ou observações (opcional)" /></label>
-            <div className="modal-footer"><button type="button" className="button button-quiet" onClick={() => setTopicModalOpen(false)}>Cancelar</button><button className="button button-primary" disabled={isPending}><Plus size={15} /> Salvar tópico</button></div>
-          </form>
         </section>
       </div>}
       {modalOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (!isGenerating && event.target === event.currentTarget) setModalOpen(false); }}>
@@ -976,11 +964,13 @@ function concatenateBytes(parts: Uint8Array[]) {
   return result;
 }
 
-function StudioScreen({ topics, selectedTopic, onSelectedTopic, uploadedFile, fileInputRef, onFile, onGenerate, onOpenPresets, onExport, provas }: {
+function StudioScreen({ topics, selectedTopic, onSelectedTopic, uploadedFile, isUploadingSyllabus, syllabusExtractionError, fileInputRef, onFile, onGenerate, onOpenPresets, onExport, provas }: {
   topics: TopicRecord[];
   selectedTopic: string;
   onSelectedTopic: (id: string) => void;
   uploadedFile: string;
+  isUploadingSyllabus: boolean;
+  syllabusExtractionError: string | null;
   provas: AppData["provas"];
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   onFile: (event: ChangeEvent<HTMLInputElement>) => void;
@@ -1008,8 +998,8 @@ function StudioScreen({ topics, selectedTopic, onSelectedTopic, uploadedFile, fi
       <div className="studio-main">
         <div className="studio-card source-card">
           <div className="card-title-row"><div className="number-badge">01</div><div><span className="section-kicker">FONTE DE CONTEÚDO</span><h2>Comece pelo seu documento</h2></div><span className="ready-tag">{uploadedFile ? <><Check size={12} /> Documento pronto</> : "Documento opcional"}</span></div>
-          <div className="source-file"><span className="source-file-icon"><FileText size={19} /></span><div><strong>{uploadedFile || "Nenhum documento selecionado"}</strong><span>{uploadedFile ? "Documento-base · PDF / DOCX / TXT" : "Adicione a ementa ou o conteúdo da aula"}</span></div><button className="button button-outline button-small" onClick={() => fileInputRef.current?.click()}><Upload size={14} /> Trocar arquivo</button></div>
-          <input ref={fileInputRef} type="file" accept=".pdf,.doc,.docx,.txt" className="sr-only" onChange={onFile} />
+          <div className="source-file"><span className="source-file-icon"><FileText size={19} /></span><div><strong>{uploadedFile || "Nenhum documento selecionado"}</strong><span>{isUploadingSyllabus ? "Enviando e extraindo tópicos com IA…" : syllabusExtractionError ?? (uploadedFile ? "Documento-base · PDF / DOCX / TXT" : "Adicione a ementa ou o conteúdo da aula")}</span></div><button className="button button-outline button-small" onClick={() => fileInputRef.current?.click()} disabled={isUploadingSyllabus}><Upload size={14} /> {isUploadingSyllabus ? "Processando…" : "Trocar arquivo"}</button></div>
+          <input ref={fileInputRef} type="file" accept=".pdf,.docx,.txt" className="sr-only" onChange={onFile} disabled={isUploadingSyllabus} />
         </div>
 
         <div className="studio-card create-card">
