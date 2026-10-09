@@ -21,6 +21,7 @@ export type SyllabusRecord = {
   situacao_extracao: "pendente" | "processando" | "concluido" | "falhou";
   erro_extracao: string | null;
 };
+export type SubjectWithSyllabus = SubjectRecord & { ementa: SyllabusRecord | null };
 export type SyllabusUploadResult = {
   topicosCriados: number;
   aviso: string | null;
@@ -54,8 +55,7 @@ export type TemplateRecord = {
 };
 export type AppData = {
   professor: { id: string; nome_completo: string; nome_instituicao: string | null };
-  materias: SubjectRecord[];
-  ementas: SyllabusRecord[];
+  materias: SubjectWithSyllabus[];
   topicos: TopicRecord[];
   prePromptos: TemplateRecord[];
   provas: { id: string; titulo: string }[];
@@ -109,6 +109,8 @@ export async function carregarDados(): Promise<ActionResult<AppData | null>> {
   if (firstError) return { data: null, error: errorMessage(firstError) };
   if (!profileResult.data) return { data: null, error: "Não foi possível carregar o perfil do professor." };
 
+  const syllabusBySubject = new Map((syllabiResult.data ?? []).map((syllabus) => [syllabus.materia_id, syllabus]));
+
   const artifactById = new Map(
     (artifactsResult.data ?? []).map((artifact) => [artifact.id, artifact]),
   );
@@ -131,8 +133,10 @@ export async function carregarDados(): Promise<ActionResult<AppData | null>> {
   return {
     data: {
       professor: profileResult.data,
-      materias: subjectsResult.data ?? [],
-      ementas: syllabiResult.data ?? [],
+      materias: (subjectsResult.data ?? []).map((subject) => ({
+        ...subject,
+        ementa: syllabusBySubject.get(subject.id) ?? null,
+      })),
       topicos: (topicsResult.data ?? []).map((topic) => {
         const progress = progressByTopic.get(topic.id);
         return {
@@ -279,66 +283,71 @@ export async function enviarEmenta(formData: FormData): Promise<ActionResult<Syl
   }
 
   const { supabase, user } = await usuarioAutenticado();
+  const [subjectResult, existingSyllabusResult] = await Promise.all([
+    supabase.from("materias").select("id,nome,ano_letivo").eq("id", subjectId).eq("professor_id", user.id).single(),
+    supabase.from("ementas").select("id,caminho_arquivo").eq("materia_id", subjectId).eq("professor_id", user.id).order("criado_em", { ascending: false }).limit(1).maybeSingle(),
+  ]);
+  if (subjectResult.error || !subjectResult.data) {
+    return { data: null, error: errorMessage(subjectResult.error ?? { message: "A matéria não foi encontrada." }) };
+  }
+  if (existingSyllabusResult.error) return { data: null, error: errorMessage(existingSyllabusResult.error) };
+
+  let extraction: Awaited<ReturnType<typeof extrairTopicosDaEmenta>>;
+  try {
+    extraction = await extrairTopicosDaEmenta(file, mimeType);
+  } catch (extractionError) {
+    return { data: null, error: mensagemErroExtracao(extractionError) };
+  }
+
   const storagePath = `${user.id}/${crypto.randomUUID()}.${extension}`;
   const { error: uploadError } = await supabase.storage
     .from("documentos-base")
     .upload(storagePath, file, { contentType: mimeType, upsert: false });
   if (uploadError) return { data: null, error: errorMessage(uploadError) };
 
-  const { data, error } = await supabase
-    .from("ementas")
-    .insert({
-      professor_id: user.id,
-      materia_id: subjectId,
-      titulo: isNonEmptyString(titleValue) ? titleValue.trim() : file.name,
-      periodo: isNonEmptyString(periodValue) ? periodValue.trim() : null,
-      ano_letivo: academicYearValue,
-      caminho_arquivo: storagePath,
-      nome_arquivo: file.name,
-      tipo_mime: mimeType,
-      tamanho_arquivo_bytes: file.size,
-      situacao_extracao: "processando",
-      erro_extracao: null,
-      enviado_em: new Date().toISOString(),
-    })
-    .select("id,materia_id,titulo,nome_arquivo,criado_em,situacao_extracao,erro_extracao")
-    .single();
-  if (error) {
+  const { data: syllabusId, error: replaceError } = await supabase.rpc("substituir_ementa_com_topicos", {
+    p_materia_id: subjectResult.data.id,
+    p_titulo: isNonEmptyString(titleValue) ? titleValue.trim() : file.name,
+    p_periodo: isNonEmptyString(periodValue) ? periodValue.trim() : null,
+    p_ano_letivo: academicYearValue,
+    p_caminho_arquivo: storagePath,
+    p_nome_arquivo: file.name,
+    p_tipo_mime: mimeType,
+    p_tamanho_arquivo_bytes: file.size,
+    p_texto_extraido: extraction.textoExtraido,
+    p_topicos: extraction.topicos.map((topic) => ({
+      titulo: topic.titulo,
+      descricao: topic.descricao || null,
+      habilidades: topic.habilidades,
+    })),
+  });
+  if (replaceError || !syllabusId) {
     const { error: cleanupError } = await supabase.storage.from("documentos-base").remove([storagePath]);
-    if (cleanupError) {
-      return { data: null, error: `${error.message} O upload temporário também não pôde ser removido: ${cleanupError.message}` };
-    }
-    return { data: null, error: errorMessage(error) };
+    const message = errorMessage(replaceError ?? { message: "A ementa não foi salva." });
+    return {
+      data: null,
+      error: cleanupError ? `${message} O arquivo temporário também não pôde ser removido: ${errorMessage(cleanupError)}` : message,
+    };
   }
 
-  let extraction: Awaited<ReturnType<typeof extrairTopicosDaEmenta>>;
-  try {
-    extraction = await extrairTopicosDaEmenta(file, mimeType);
-  } catch (extractionError) {
-    const message = mensagemErroExtracao(extractionError);
-    const { error: statusError } = await supabase
-      .from("ementas")
-      .update({ situacao_extracao: "falhou", erro_extracao: message })
-      .eq("id", data.id)
-      .eq("professor_id", user.id);
-    const aviso = statusError
-      ? `${message} Além disso, não foi possível registrar a falha da extração: ${errorMessage(statusError)}`
-      : `O documento foi enviado, mas os tópicos não puderam ser extraídos: ${message}`;
-    revalidatePath("/");
-    return { data: { topicosCriados: 0, aviso }, error: null };
+  let storageWarning: string | null = null;
+  const previousPath = existingSyllabusResult.data?.caminho_arquivo;
+  if (previousPath && previousPath !== storagePath) {
+    const { error: cleanupError } = await supabase.storage.from("documentos-base").remove([previousPath]);
+    if (cleanupError) storageWarning = `A nova ementa foi salva, mas o arquivo anterior não pôde ser removido: ${errorMessage(cleanupError)}`;
   }
 
-  const [subjectResult, profileResult] = await Promise.all([
-    supabase.from("materias").select("id,nome,ano_letivo").eq("id", data.materia_id).eq("professor_id", user.id).single(),
-    supabase.from("professores").select("nome_completo,nome_instituicao").eq("id", user.id).single(),
-  ]);
+  const { data: profile, error: profileError } = await supabase
+    .from("professores")
+    .select("nome_completo,nome_instituicao")
+    .eq("id", user.id)
+    .single();
   let headerWarning: string | null = null;
   let metadataWarning: string | null = null;
-  if (subjectResult.error || profileResult.error || !subjectResult.data || !profileResult.data) {
-    headerWarning = `Os tópicos foram identificados, mas não foi possível preparar o cabeçalho padrão: ${errorMessage(subjectResult.error ?? profileResult.error ?? { message: "perfil ou matéria não encontrado" })}`;
+  if (profileError || !profile) {
+    headerWarning = `A ementa foi salva, mas não foi possível preparar o cabeçalho padrão: ${errorMessage(profileError ?? { message: "perfil não encontrado" })}`;
   } else {
     const subject = subjectResult.data;
-    const profile = profileResult.data;
     const institution = (extraction.metadados.instituicao || profile.nome_instituicao || "").trim().slice(0, 160);
     const schoolLookup = supabase
       .from("pre_promptos")
@@ -373,44 +382,8 @@ export async function enviarEmenta(formData: FormData): Promise<ActionResult<Syl
     }
   }
 
-  const { error: topicsError } = await supabase.from("topicos_ementa").insert(
-    extraction.topicos.map((topic, index) => ({
-      professor_id: user.id,
-      ementa_id: data.id,
-      materia_id: data.materia_id,
-      ordem: index + 1,
-      titulo: topic.titulo,
-      descricao: topic.descricao || null,
-      habilidades: topic.habilidades,
-    })),
-  );
-  if (topicsError) {
-    const message = errorMessage(topicsError);
-    const { error: statusError } = await supabase
-      .from("ementas")
-      .update({ situacao_extracao: "falhou", erro_extracao: message })
-      .eq("id", data.id)
-      .eq("professor_id", user.id);
-    const aviso = statusError
-      ? `Os tópicos foram identificados, mas não puderam ser salvos: ${message}. Também não foi possível registrar a falha: ${errorMessage(statusError)}`
-      : `Os tópicos foram identificados, mas não puderam ser salvos: ${message}`;
-    revalidatePath("/");
-    return { data: { topicosCriados: 0, aviso: [aviso, headerWarning].filter(Boolean).join(" ") }, error: null };
-  }
-
-  const { error: completionError } = await supabase
-    .from("ementas")
-    .update({
-      situacao_extracao: "concluido",
-      erro_extracao: null,
-      texto_extraido: extraction.textoExtraido,
-    })
-    .eq("id", data.id)
-    .eq("professor_id", user.id);
   const aviso = [
-    completionError
-      ? `Os tópicos foram gerados, mas o status da extração não pôde ser atualizado: ${errorMessage(completionError)}`
-      : null,
+    storageWarning,
     headerWarning,
     metadataWarning,
   ].filter((message): message is string => Boolean(message)).join(" ") || null;
@@ -696,39 +669,34 @@ export async function gerarMaterialComIA(input: {
   const selectedTopics = topicIds.map((id) => topicById.get(id)).filter((item) => item !== undefined);
   if (!selectedTopics.length) return { data: null, error: "Selecione pelo menos um tópico válido." };
 
-  const syllabusIds = [...new Set(selectedTopics.map((topic) => topic.ementa_id))];
-  const [subjectResult, syllabiResult, profileResult] = await Promise.all([
+  const syllabusId = selectedTopics[0].ementa_id;
+  if (!selectedTopics.every((topic) => topic.ementa_id === syllabusId)) {
+    return { data: null, error: "Os tópicos selecionados precisam pertencer à mesma ementa." };
+  }
+  const [subjectResult, syllabusResult, profileResult] = await Promise.all([
     supabase.from("materias").select("id,nome,ano_letivo").eq("id", input.materiaId).eq("professor_id", user.id).single(),
-    supabase.from("ementas").select("id,titulo,texto_extraido,periodo,caminho_arquivo,tipo_mime,nome_arquivo").in("id", syllabusIds).eq("professor_id", user.id),
+    supabase.from("ementas").select("id,titulo,texto_extraido,periodo,caminho_arquivo,tipo_mime,nome_arquivo").eq("id", syllabusId).eq("materia_id", input.materiaId).eq("professor_id", user.id).single(),
     supabase.from("professores").select("nome_completo,nome_instituicao").eq("id", user.id).single(),
   ]);
-  const contextError = subjectResult.error ?? syllabiResult.error ?? profileResult.error;
+  const contextError = subjectResult.error ?? syllabusResult.error ?? profileResult.error;
   if (contextError) return { data: null, error: errorMessage(contextError) };
-  if (!subjectResult.data || !profileResult.data || !syllabiResult.data || syllabiResult.data.length !== syllabusIds.length) {
+  if (!subjectResult.data || !profileResult.data || !syllabusResult.data) {
     return { data: null, error: "Não foi possível montar o contexto completo para a geração." };
   }
   const subject = subjectResult.data;
   const profile = profileResult.data;
-  const syllabiById = new Map(syllabiResult.data.map((item) => [item.id, item]));
-  const syllabusRecords = syllabusIds.map((id) => syllabiById.get(id)).filter((item) => item !== undefined);
+  const syllabus = syllabusResult.data;
   const documentTexts: string[] = [];
   const documentsPdf: { mimeType: "application/pdf"; data: string }[] = [];
-  let remainingTextCharacters = 60_000;
-  let totalPdfBytes = 0;
-  for (const syllabus of syllabusRecords) {
-    if (syllabus.texto_extraido?.trim()) {
-      const text = syllabus.texto_extraido.slice(0, remainingTextCharacters);
-      if (text.trim()) documentTexts.push(`Ementa: ${syllabus.titulo}\n${text}`);
-      remainingTextCharacters -= text.length;
-      continue;
-    }
-    if (!syllabus.caminho_arquivo) continue;
+  if (syllabus.texto_extraido?.trim()) {
+    documentTexts.push(`Ementa: ${syllabus.titulo}\n${syllabus.texto_extraido.slice(0, 60_000)}`);
+  } else if (syllabus.caminho_arquivo) {
     const { data: sourceFile, error } = await supabase.storage
       .from("documentos-base")
       .download(syllabus.caminho_arquivo);
     if (error) return { data: null, error: `Não foi possível ler o documento-base “${syllabus.titulo}”: ${error.message}` };
     if (sourceFile.size > 20 * 1024 * 1024) {
-      return { data: null, error: "Para usar os documentos como contexto da IA, o total deve ter no máximo 20 MB." };
+      return { data: null, error: "O documento-base deve ter no máximo 20 MB para ser usado pela IA." };
     }
 
     const sourceBytes = Buffer.from(await sourceFile.arrayBuffer());
@@ -736,15 +704,10 @@ export async function gerarMaterialComIA(input: {
       if (sourceBytes.subarray(0, 5).toString("ascii") !== "%PDF-") {
         return { data: null, error: `O documento “${syllabus.titulo}” não parece ser um PDF válido.` };
       }
-      totalPdfBytes += sourceBytes.length;
-      if (totalPdfBytes > 20 * 1024 * 1024) {
-        return { data: null, error: "Os documentos PDF selecionados excedem o limite total de 20 MB para a IA." };
-      }
       documentsPdf.push({ mimeType: "application/pdf", data: sourceBytes.toString("base64") });
     } else if (syllabus.tipo_mime === "text/plain") {
-      const text = new TextDecoder().decode(sourceBytes).slice(0, remainingTextCharacters);
+      const text = new TextDecoder().decode(sourceBytes).slice(0, 60_000);
       if (text.trim()) documentTexts.push(`Ementa: ${syllabus.titulo}\n${text}`);
-      remainingTextCharacters -= text.length;
     } else if (syllabus.tipo_mime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
       let extractedText: string;
       try {
@@ -752,12 +715,11 @@ export async function gerarMaterialComIA(input: {
       } catch {
         return { data: null, error: `Não foi possível extrair o texto do DOCX “${syllabus.titulo}”. Verifique se o arquivo está íntegro.` };
       }
-      const text = extractedText.slice(0, remainingTextCharacters);
+      const text = extractedText.slice(0, 60_000);
       if (!text.trim()) {
         return { data: null, error: `O DOCX “${syllabus.titulo}” não contém texto legível para usar como referência da IA.` };
       }
       documentTexts.push(`Ementa: ${syllabus.titulo}\n${text}`);
-      remainingTextCharacters -= text.length;
     } else if (syllabus.tipo_mime === "application/msword") {
       return { data: null, error: `Para usar “${syllabus.titulo}” na geração por IA, salve o arquivo DOC como DOCX ou PDF.` };
     }
@@ -832,7 +794,7 @@ export async function gerarMaterialComIA(input: {
           ? topic.habilidades.filter((item): item is string => typeof item === "string")
           : [],
       })),
-      ementa: syllabusRecords.map((item) => [item.titulo, item.periodo].filter(Boolean).join(" · ")).join("; "),
+      ementa: [syllabus.titulo, syllabus.periodo].filter(Boolean).join(" · "),
       trechoDocumento,
       documentoPdfAnexado: documentsPdf.length > 0,
       instrucoesProfessor: preset?.instrucoes_fixas ?? "",
@@ -881,7 +843,7 @@ export async function gerarMaterialComIA(input: {
     .insert({
       professor_id: user.id,
       materia_id: input.materiaId,
-      ementa_id: syllabusIds.length === 1 ? syllabusIds[0] : null,
+      ementa_id: syllabusId,
       pre_prompto_id: header?.id ?? preset?.id ?? null,
       tipo: input.tipo,
       situacao: "gerado",

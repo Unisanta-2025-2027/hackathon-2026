@@ -86,6 +86,7 @@ export default function Home() {
   const [formError, setFormError] = useState("");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isUploadingSyllabus, setIsUploadingSyllabus] = useState(false);
+  const [syllabusUploadError, setSyllabusUploadError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const refreshData = useCallback(async (preferredSubjectId?: string) => {
@@ -124,7 +125,7 @@ export default function Home() {
   }, [refreshData]);
 
   const subject = appData?.materias.find((item) => item.id === selectedSubject);
-  const syllabus = appData?.ementas.find((item) => item.materia_id === selectedSubject);
+  const syllabus = subject?.ementa ?? null;
   const topics = useMemo(
     () => appData?.topicos.filter((topic) => topic.materia_id === selectedSubject) ?? [],
     [appData?.topicos, selectedSubject],
@@ -134,8 +135,8 @@ export default function Home() {
   const subjectHeaders = presets.filter((preset) => preset.materia_id === selectedSubject);
   const selectedHeader = subjectHeaders.find((preset) => preset.id === selectedHeaderId && preset.ativo)
     ?? (selectedHeaderId ? subjectHeaders.find((preset) => preset.ativo) : undefined);
-  const topicSyllabus = appData?.ementas.find((item) => item.id === activeTopic?.ementa_id);
-  const uploadedFile = topicSyllabus?.nome_arquivo ?? syllabus?.nome_arquivo ?? "";
+  const uploadedFile = syllabus?.nome_arquivo ?? "";
+  const syllabusExtractionError = syllabusUploadError || (syllabus?.situacao_extracao === "falhou" ? syllabus.erro_extracao ?? "A extração dos tópicos falhou." : null);
   const totals = useMemo(() => {
     let planned = 0;
     let activities = 0;
@@ -195,6 +196,7 @@ export default function Home() {
       if (!selectedSubject) notify("Crie ou selecione uma matéria antes de enviar a ementa.");
       return;
     }
+    setSyllabusUploadError("");
     const formData = new FormData();
     formData.set("arquivo", file);
     formData.set("materiaId", selectedSubject);
@@ -205,11 +207,11 @@ export default function Home() {
       try {
         const result = await enviarEmenta(formData);
         if (result.error) {
-          notify(result.error);
+          setSyllabusUploadError(result.error);
           return;
         }
         if (!result.data) {
-          notify("O envio da ementa não retornou um resultado válido.");
+          setSyllabusUploadError("O envio da ementa não retornou um resultado válido.");
           return;
         }
         await refreshData(selectedSubject);
@@ -218,7 +220,7 @@ export default function Home() {
             `Documento enviado e ${result.data.topicosCriados} tópicos identificados automaticamente.`,
         );
       } catch (error) {
-        notify(error instanceof Error ? error.message : "Falha inesperada ao enviar a ementa.");
+        setSyllabusUploadError(error instanceof Error ? error.message : "Falha inesperada ao enviar a ementa.");
       } finally {
         setIsUploadingSyllabus(false);
       }
@@ -432,6 +434,7 @@ export default function Home() {
         return;
       }
       setSyllabusToDelete(null);
+      setSyllabusUploadError("");
       await refreshData(selectedSubject);
       notify(result.data?.aviso ?? "Ementa, arquivo e tópicos vinculados excluídos.");
     });
@@ -591,6 +594,7 @@ export default function Home() {
             <select value={selectedSubject} onChange={(event) => {
               const id = event.target.value;
               setSelectedSubject(id);
+              setSyllabusUploadError("");
               const firstTopic = appData.topicos.find((item) => item.materia_id === id);
               setSelectedTopicIds(firstTopic ? [firstTopic.id] : []);
               setSelectedHeaderId(appData.prePromptos.find((item) => item.materia_id === id && item.ativo)?.id ?? "");
@@ -647,27 +651,28 @@ export default function Home() {
               </div>
 
               <input ref={fileInputRef} type="file" accept=".pdf,.docx,.txt" className="sr-only" onChange={handleFile} disabled={isUploadingSyllabus} />
-              <button className="upload-strip" onClick={() => fileInputRef.current?.click()} disabled={isUploadingSyllabus}>
-                <span className="upload-symbol"><CloudUpload size={21} /></span>
-                <span className="upload-copy"><strong>Adicionar ementa ou documento-base</strong><span>{isUploadingSyllabus ? "Enviando e identificando os tópicos com IA…" : syllabus?.situacao_extracao === "falhou" ? <>Documento salvo, mas a extração falhou: {syllabus.erro_extracao ?? "erro não identificado"}. Envie novamente para tentar outra vez.</> : uploadedFile ? <>Última ementa: <b>{uploadedFile}</b>{syllabus?.situacao_extracao === "concluido" ? " · tópicos extraídos" : ""}</> : "Selecione um PDF, DOCX ou TXT para armazenar na sua conta"}</span></span>
-                <span className="upload-action"><Upload size={14} /> {isUploadingSyllabus ? "Processando…" : "Selecionar arquivo"}</span>
-              </button>
-
-              {appData.ementas.some((item) => item.materia_id === subject.id) && <section className="overview-card syllabus-card" aria-label="Ementas desta matéria">
-                <div className="section-heading syllabus-heading"><div><span className="section-kicker">DOCUMENTOS-BASE</span><h2>Ementas adicionadas</h2></div><span className="topic-count">{appData.ementas.filter((item) => item.materia_id === subject.id).length}</span></div>
-                <ul className="syllabus-list">
-                  {appData.ementas.filter((item) => item.materia_id === subject.id).map((item) => (
-                    <li key={item.id} className="syllabus-item">
-                      <span className="syllabus-file-icon"><FileText size={17} /></span>
-                      <span className="syllabus-item-copy">
-                        <strong>{item.titulo}</strong>
-                        <small>{item.nome_arquivo ?? "Documento sem arquivo"} · {item.situacao_extracao === "concluido" ? "Tópicos extraídos" : item.situacao_extracao === "processando" ? "Extração em andamento" : item.situacao_extracao === "falhou" ? `Falha na extração: ${item.erro_extracao ?? "erro não identificado"}` : "Aguardando extração"}</small>
-                      </span>
-                      <button className="icon-button syllabus-delete-button" aria-label={`Excluir ementa ${item.titulo}`} title="Excluir ementa" onClick={() => setSyllabusToDelete(item)} disabled={isPending || isUploadingSyllabus}><Trash2 size={16} /></button>
-                    </li>
-                  ))}
-                </ul>
-              </section>}
+              {syllabus ? <section className="overview-card syllabus-slot" aria-label="Ementa desta matéria">
+                <span className="syllabus-file-icon"><FileText size={18} /></span>
+                <div className="syllabus-slot-copy">
+                  <strong>{syllabus.nome_arquivo ?? syllabus.titulo}</strong>
+                  <small>{isUploadingSyllabus ? "Enviando e extraindo tópicos…" : syllabus.titulo}</small>
+                </div>
+                <span className={`syllabus-status ${syllabus.situacao_extracao === "concluido" ? "syllabus-status-ready" : syllabus.situacao_extracao === "falhou" ? "syllabus-status-failed" : ""}`}>
+                  {isUploadingSyllabus ? "Processando" : syllabus.situacao_extracao === "concluido" ? "Tópicos extraídos" : syllabus.situacao_extracao === "falhou" ? "Falha na extração" : "Aguardando extração"}
+                </span>
+                <div className="syllabus-slot-actions">
+                  <button className="button button-outline button-small" onClick={() => fileInputRef.current?.click()} disabled={isUploadingSyllabus}><Upload size={14} /> {isUploadingSyllabus ? "Processando…" : "Substituir"}</button>
+                  <button className="icon-button syllabus-delete-button" aria-label="Remover ementa" title="Remover ementa" onClick={() => setSyllabusToDelete(syllabus)} disabled={isPending || isUploadingSyllabus}><Trash2 size={16} /></button>
+                </div>
+                {syllabusExtractionError && <p className="syllabus-upload-error" role="alert">{syllabusExtractionError} Envie outro arquivo para tentar novamente.</p>}
+              </section> : <div className="syllabus-empty">
+                <button className="upload-strip" onClick={() => fileInputRef.current?.click()} disabled={isUploadingSyllabus}>
+                  <span className="upload-symbol"><CloudUpload size={21} /></span>
+                  <span className="upload-copy"><strong>Adicionar ementa ou documento-base</strong><span>{isUploadingSyllabus ? "Enviando e identificando os tópicos com IA…" : "Selecione um PDF, DOCX ou TXT para armazenar na sua conta"}</span></span>
+                  <span className="upload-action"><Upload size={14} /> {isUploadingSyllabus ? "Processando…" : "Selecionar arquivo"}</span>
+                </button>
+                {syllabusExtractionError && <p className="syllabus-upload-error" role="alert">{syllabusExtractionError} Escolha outro arquivo para tentar novamente.</p>}
+              </div>}
 
               <section className="overview-card tracker-summary">
                 <div className="section-heading summary-heading">
@@ -710,7 +715,7 @@ export default function Home() {
                     </tbody>
                   </table>
                 </div>
-                <div className="table-footer"><span>Exibindo <strong>{visibleTopics.length}</strong> de <strong>{topics.length}</strong> tópicos</span><div className="table-footer-actions"><button onClick={() => fileInputRef.current?.click()} className="text-link" disabled={isUploadingSyllabus}><Upload size={13} /> Enviar ementa</button><button onClick={() => openGenerator()} className="text-link">Criar material <ArrowRight size={14} /></button></div></div>
+                <div className="table-footer"><span>Exibindo <strong>{visibleTopics.length}</strong> de <strong>{topics.length}</strong> tópicos</span><div className="table-footer-actions"><button onClick={() => fileInputRef.current?.click()} className="text-link" disabled={isUploadingSyllabus}><Upload size={13} /> {syllabus ? "Substituir ementa" : "Enviar ementa"}</button><button onClick={() => openGenerator()} className="text-link">Criar material <ArrowRight size={14} /></button></div></div>
               </section>
               <div className="bottom-note"><Sparkles size={14} /> Um documento-base, vários materiais prontos para seus estudantes.</div>
             </>
@@ -724,7 +729,7 @@ export default function Home() {
               onSelectedTopics={setSelectedTopicIds}
               uploadedFile={uploadedFile}
               isUploadingSyllabus={isUploadingSyllabus}
-              syllabusExtractionError={syllabus?.situacao_extracao === "falhou" ? syllabus.erro_extracao : null}
+              syllabusExtractionError={syllabusExtractionError}
               fileInputRef={fileInputRef}
               onFile={handleFile}
               onGenerate={openGenerator}
