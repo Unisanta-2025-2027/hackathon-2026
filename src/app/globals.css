@@ -275,7 +275,7 @@ h1 { display: flex; align-items: center; gap: 12px; margin-bottom: 9px; color: #
 
 /* Generator modal and feedback */
 .modal-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 20px; background: #20202b75; backdrop-filter: blur(3px); }
-.generator-modal { width: min(100%,470px); padding: 22px; border: 1px solid #eeedf2; border-radius: 13px; background: white; box-shadow: 0 24px 90px #17151d42; animation: modal-in .18s ease-out; }
+.generator-modal { width: min(100%,470px); max-height: calc(100dvh - 40px); overflow-y: auto; padding: 22px; border: 1px solid #eeedf2; border-radius: 13px; background: white; box-shadow: 0 24px 90px #17151d42; animation: modal-in .18s ease-out; }
 @keyframes modal-in { from { opacity: 0; transform: translateY(8px) scale(.99); } to { opacity: 1; transform: translateY(0) scale(1); } }
 .modal-topline { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .modal-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px; color: var(--violet); background: #f0eeff; }
@@ -299,6 +299,19 @@ h1 { display: flex; align-items: center; gap: 12px; margin-bottom: 9px; color: #
 .modal-template > button { border: 0; color: var(--violet-dark); background: none; font-size: 9px; cursor: pointer; }
 .modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 17px; padding-top: 14px; border-top: 1px solid #efeff2; }
 .modal-disclaimer { margin: 12px 0 0; color: #a0a2aa; font-size: 8px; text-align: right; }
+.generation-panel { padding: 4px 0 0; }
+.generation-panel h2 { margin: 9px 0 8px; color: #33353e; font-size: 21px; letter-spacing: -.5px; }
+.generation-description { margin: 0 0 22px; color: #818590; font-size: 12px; line-height: 1.65; }
+.generation-progress { position: relative; height: 9px; overflow: hidden; border-radius: 99px; background: #eeecf8; }
+.generation-progress span { position: absolute; inset: 0 auto 0 -42%; width: 42%; border-radius: inherit; background: linear-gradient(90deg,#8b7df0,#6655db); animation: generation-sweep 1.35s ease-in-out infinite; }
+@keyframes generation-sweep { from { transform: translateX(0); } to { transform: translateX(340%); } }
+.generation-elapsed { margin: 10px 0 18px; color: #9396a0; font-size: 10px; }
+.generation-elapsed strong { color: #5f5b78; font-variant-numeric: tabular-nums; font-weight: 650; }
+.generation-steps { display: grid; gap: 12px; padding: 15px; border: 1px solid #efedf7; border-radius: 9px; background: #fcfbff; }
+.generation-steps span { display: flex; align-items: center; gap: 9px; color: #686b76; font-size: 11px; line-height: 1.45; }
+.generation-steps b { width: 23px; height: 23px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 50%; color: #6b5dd2; background: #f0eeff; font-size: 9px; }
+.generation-panel .modal-disclaimer { margin-top: 14px; text-align: center; }
+.generation-error { padding: 11px 12px; margin: 12px 0 0; border: 1px solid #f2d2d2; border-radius: 7px; color: #a33f43; background: #fff8f8; font-size: 11px; line-height: 1.55; }
 .toast { position: fixed; right: 24px; bottom: 23px; z-index: 30; display: flex; align-items: center; gap: 8px; max-width: min(400px,calc(100vw - 32px)); padding: 12px 15px; border: 1px solid #d9ece3; border-radius: 8px; color: #397c65; background: #f6fcf9; box-shadow: 0 8px 25px #17211a15; font-size: 11px; animation: modal-in .18s ease-out; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 
@@ -366,6 +379,13 @@ h1 { display: flex; align-items: center; gap: 12px; margin-bottom: 9px; color: #
   .add-preset-card { align-items: stretch; flex-direction: column; gap: 12px; }
   .add-preset-form input { flex: 1; min-width: 0; }
   .saved-count { align-self: flex-start; }
+  .modal-backdrop { padding: 12px; }
+  .generator-modal { max-height: calc(100dvh - 24px); padding: 17px; }
+  .generation-panel h2 { font-size: 19px; }
+  .generation-steps { gap: 10px; padding: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .generation-progress span { animation-duration: 3s; }
 }
 @media (max-width: 420px) {
   .profile-more { display: none; }
@@ -441,4 +461,26 @@ h1 { display: flex; align-items: center; gap: 12px; margin-bottom: 9px; color: #
 @media (max-width: 420px) {
   .table-footer { align-items: flex-start; flex-direction: column; gap: 9px; }
   .table-footer-actions { width: 100%; justify-content: space-between; }
+}
+.generated-modal { width: min(100%, 790px); max-height: min(88vh, 920px); overflow: auto; padding: 22px; border: 1px solid #e9e8ef; border-radius: 12px; background: #fff; box-shadow: 0 24px 80px #25203b2b; }
+.generated-modal > h2 { margin: 5px 0 16px; color: #383943; font-size: 19px; line-height: 1.35; }
+.teacher-key-notice { padding: 9px 11px; margin: -6px 0 12px; border-radius: 6px; color: #75612b; background: #fff9e9; font-size: 10px; line-height: 1.5; }
+.exam-version-select { display: flex; align-items: center; gap: 11px; margin: 0 0 12px; color: #777986; font-size: 9px; font-weight: 700; }
+.exam-version-select select { padding: 7px 9px; border: 1px solid #e8e7ee; border-radius: 5px; color: #555762; background: #fff; font-size: 10px; font-weight: 500; }
+.generated-preview { display: grid; gap: 9px; max-height: 62vh; overflow: auto; padding: 12px; border: 1px solid #eeedf2; border-radius: 8px; background: #fcfcfe; }
+.generated-section { padding: 10px 11px; border-bottom: 1px solid #eeedf2; }
+.generated-section:last-child { border-bottom: 0; }
+.generated-section > h3 { margin: 0 0 10px; color: #6655bb; font-size: 12px; text-transform: capitalize; }
+.generated-list { display: grid; gap: 9px; }
+.generated-item { display: grid; grid-template-columns: 22px minmax(0,1fr); gap: 8px; align-items: start; }
+.generated-item-number { padding-top: 2px; color: #a1a0aa; font-size: 9px; }
+.generated-object { display: grid; gap: 8px; min-width: 0; }
+.generated-field { display: grid; gap: 3px; min-width: 0; }
+.generated-field > strong { color: #777986; font-size: 9px; font-weight: 700; text-transform: capitalize; }
+.generated-text { margin: 0; color: #555762; font-size: 10px; line-height: 1.65; white-space: pre-wrap; }
+.generated-modal .modal-footer { position: sticky; bottom: -22px; padding: 12px 0 0; background: #fff; }
+@media (max-width: 650px) {
+  .generated-modal { padding: 17px; }
+  .generated-preview { max-height: 57vh; }
+  .generated-modal .modal-footer { bottom: -17px; }
 }

@@ -33,8 +33,8 @@ import {
   atualizarSituacaoTopico,
   carregarDados,
   cadastrar,
-  criarArtefato,
   criarCorrecao,
+  gerarMaterialComIA,
   criarMateria,
   criarPrePrompto,
   criarTopico,
@@ -43,6 +43,7 @@ import {
   enviarEmenta,
   sair,
   type AppData,
+  type MaterialGerado,
   type TopicRecord,
 } from "./actions";
 import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
@@ -56,16 +57,21 @@ export default function Home() {
   const [appData, setAppData] = useState<AppData | null>(null);
   const [loading, setLoading] = useState(true);
   const [isPending, startTransition] = useTransition();
+  const generationLockRef = useRef(false);
   const [selectedSubject, setSelectedSubject] = useState("");
   const [selectedClass, setSelectedClass] = useState("");
   const [filter, setFilter] = useState("Todos");
   const [query, setQuery] = useState("");
   const [topicsAscending, setTopicsSorted] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
-  const [managementOpen, setManagementOpen] = useState(false);
+  const [managementMode, setManagementMode] = useState<"materia" | "turma" | null>(null);
   const [topicModalOpen, setTopicModalOpen] = useState(false);
   const [artifact, setArtifact] = useState<Artifact>("Roteiro");
   const [activeTopicId, setActiveTopicId] = useState("");
+  const [generatedMaterial, setGeneratedMaterial] = useState<MaterialGerado | null>(null);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generationError, setGenerationError] = useState("");
+  const [examExportVersion, setExamExportVersion] = useState<"A" | "B">("A");
   const [toast, setToast] = useState("");
   const [presetName, setPresetName] = useState("");
   const [formError, setFormError] = useState("");
@@ -114,32 +120,58 @@ export default function Home() {
     () => appData?.topicos.filter((topic) => topic.materia_id === selectedSubject) ?? [],
     [appData?.topicos, selectedSubject],
   );
+  const activeTopic = topics.find((topic) => topic.id === activeTopicId);
   const presets = appData?.prePromptos ?? [];
-  const uploadedFile = syllabus?.nome_arquivo ?? "";
+  const topicSyllabus = appData?.ementas.find((item) => item.id === activeTopic?.ementa_id);
+  const uploadedFile = topicSyllabus?.nome_arquivo ?? syllabus?.nome_arquivo ?? "";
   const term = classroom?.semestre ? `${classroom.semestre}º Semestre` : `${classroom?.ano_letivo ?? new Date().getFullYear()}`;
 
   const totals = useMemo(() => {
-    const planned = topics.filter((topic) => topic.roteiro !== "Não iniciado").length;
-    const activities = topics.filter((topic) => topic.atividade === "Feito").length;
-    const assessments = topics.filter((topic) => topic.prova === "Feito").length;
-    const topicsInProgress = topics.filter((topic) =>
-      [topic.roteiro, topic.atividade, topic.prova].some((status) => status !== "Não iniciado"),
-    ).length;
-    return { planned, activities, assessments, coverage: topics.length ? Math.round((topicsInProgress / topics.length) * 100) : 0 };
+    let planned = 0;
+    let activities = 0;
+    let assessments = 0;
+    let topicsInProgress = 0;
+    for (const topic of topics) {
+      if (topic.roteiro !== "Não iniciado") planned += 1;
+      if (topic.atividade === "Feito") activities += 1;
+      if (topic.prova === "Feito") assessments += 1;
+      if (
+        topic.roteiro !== "Não iniciado" ||
+        topic.atividade !== "Não iniciado" ||
+        topic.prova !== "Não iniciado"
+      ) {
+        topicsInProgress += 1;
+      }
+    }
+    return {
+      planned,
+      activities,
+      assessments,
+      coverage: topics.length ? Math.round((topicsInProgress / topics.length) * 100) : 0,
+    };
   }, [topics]);
 
-  const visibleTopics = [...topics].sort((left, right) =>
-    topicsAscending ? left.titulo.localeCompare(right.titulo) : right.titulo.localeCompare(left.titulo),
-  ).filter((topic) => {
-    const matchesQuery = topic.titulo.toLowerCase().includes(query.toLowerCase());
-    const matchesFilter =
-      filter === "Todos" ||
-      (filter === "Em andamento" &&
-        [topic.roteiro, topic.atividade, topic.prova].some((status) => status === "Pendente")) ||
-      (filter === "Não iniciados" &&
-        [topic.roteiro, topic.atividade, topic.prova].every((status) => status === "Não iniciado"));
-    return matchesQuery && matchesFilter;
-  });
+  const visibleTopics = useMemo(() => {
+    const normalizedQuery = query.toLowerCase();
+    return topics
+      .filter((topic) => {
+        const matchesQuery = topic.titulo.toLowerCase().includes(normalizedQuery);
+        const matchesFilter =
+          filter === "Todos" ||
+          (filter === "Em andamento" &&
+            (topic.roteiro === "Pendente" ||
+              topic.atividade === "Pendente" ||
+              topic.prova === "Pendente")) ||
+          (filter === "Não iniciados" &&
+            topic.roteiro === "Não iniciado" &&
+            topic.atividade === "Não iniciado" &&
+            topic.prova === "Não iniciado");
+        return matchesQuery && matchesFilter;
+      })
+      .sort((left, right) =>
+        topicsAscending ? left.titulo.localeCompare(right.titulo) : right.titulo.localeCompare(left.titulo),
+      );
+  }, [filter, query, topics, topicsAscending]);
 
   function notify(message: string) {
     setToast(message);
@@ -177,53 +209,45 @@ export default function Home() {
     const topic = topicId ? topics.find((item) => item.id === topicId) : topics[0];
     if (topic) setActiveTopicId(topic.id);
     if (desiredArtifact) setArtifact(desiredArtifact);
-    if (!syllabus) {
-      notify("Adicione primeiro uma ementa para vincular este material.");
-      return;
-    }
+    setGenerationError("");
     setModalOpen(true);
   }
 
   async function generateArtifact() {
+    if (generationLockRef.current) return;
     const topic = topics.find((item) => item.id === activeTopicId);
-    if (!topic || !subject || !syllabus) {
-      notify("Selecione um tópico de uma ementa.");
+    if (!topic || !subject) {
+      notify("Selecione um tópico válido da matéria.");
       return;
     }
-    const title = `${artifact} — ${topic.titulo}`;
-    const content = {
-      objetivo: `Compreender os conceitos de ${topic.titulo} e aplicá-los em situações práticas.`,
-      desenvolvimento: artifact === "Roteiro"
-        ? "Apresentação do conteúdo, discussão guiada e resolução coletiva de exemplos."
-        : artifact === "Atividade"
-          ? "Desenvolva uma solução para o tema proposto e justifique suas escolhas."
-          : "Responda às questões e justifique as soluções com base nos conceitos estudados.",
-      questoes: "1. Explique os conceitos fundamentais relacionados ao tópico.\n2. Aplique o conteúdo em um exemplo prático.",
-    };
     const artifactType = artifact === "Roteiro" ? "roteiro_aula" : artifact === "Atividade" ? "atividade" : "prova";
-    const activePreset = presets.find((preset) => preset.ativo);
+    const activePreset = presets.find((preset) => preset.ativo && preset.tipos_artefato.includes(artifactType));
+    generationLockRef.current = true;
+    setGenerationError("");
+    setIsGenerating(true);
     startTransition(async () => {
-      const result = await criarArtefato({
-        materiaId: subject.id,
-        turmaId: classroom?.materia_id === subject.id ? classroom.id : null,
-        ementaId: topic.ementa_id,
-        topicoId: topic.id,
-        prePromptoId: activePreset?.id ?? null,
-        snapshotPrePrompto: {
-          nome: activePreset?.nome ?? "",
-          descricao: activePreset?.descricao ?? "",
-        },
-        tipo: artifactType,
-        titulo: title,
-        conteudo: content,
-      });
-      if (result.error) {
-        notify(result.error);
-        return;
+      try {
+        const result = await gerarMaterialComIA({
+          materiaId: subject.id,
+          turmaId: classroom?.materia_id === subject.id ? classroom.id : null,
+          topicoId: topic.id,
+          prePromptoId: activePreset?.id ?? null,
+          tipo: artifactType,
+        });
+        if (result.error || !result.data) {
+          setGenerationError(result.error ?? "Não foi possível gerar o material. Tente novamente.");
+          return;
+        }
+        setGeneratedMaterial(result.data);
+        setModalOpen(false);
+        await refreshData(subject.id, classroom?.id);
+        notify("Material pedagógico gerado e salvo.");
+      } catch {
+        setGenerationError("Ocorreu um erro inesperado ao gerar o material. Verifique sua conexão e tente novamente.");
+      } finally {
+        generationLockRef.current = false;
+        setIsGenerating(false);
       }
-      setModalOpen(false);
-      await refreshData(subject.id, classroom?.id);
-      notify("Rascunho salvo no banco. A geração por IA ainda não está conectada.");
     });
   }
 
@@ -269,9 +293,43 @@ export default function Home() {
       const createdClass = classResult.data;
       setSelectedSubject(createdSubject.id);
       setSelectedClass(createdClass.id);
-      setManagementOpen(false);
       await refreshData(createdSubject.id, createdClass.id);
       notify("Matéria e turma criadas.");
+    });
+  }
+
+  async function createSubjectOnly(formData: FormData) {
+    const name = String(formData.get("materia") ?? "").trim();
+    const year = Number(formData.get("anoLetivo"));
+    startTransition(async () => {
+      const result = await criarMateria({ nome: name, anoLetivo: year });
+      if (result.error || !result.data) {
+        notify(result.error ?? "Não foi possível criar a matéria.");
+        return;
+      }
+      setManagementMode(null);
+      await refreshData(result.data.id);
+      notify("Matéria criada. Agora você pode adicionar uma turma.");
+    });
+  }
+
+  async function createClassForSelectedSubject(formData: FormData) {
+    const className = String(formData.get("turma") ?? "").trim();
+    const semesterValue = String(formData.get("semestre") ?? "");
+    startTransition(async () => {
+      const result = await criarTurma({
+        materiaId: selectedSubject,
+        nome: className,
+        semestre: semesterValue ? Number(semesterValue) : null,
+        turno: String(formData.get("turno") ?? "").trim() || null,
+      });
+      if (result.error || !result.data) {
+        notify(result.error ?? "Não foi possível criar a turma.");
+        return;
+      }
+      setManagementMode(null);
+      await refreshData(selectedSubject, result.data.id);
+      notify(`Turma adicionada à matéria ${subject?.nome}.`);
     });
   }
 
@@ -392,23 +450,43 @@ export default function Home() {
     </div></main>;
   }
 
-  const selectedSubjectRecord = subject;
-  function exportDocument(format: "PDF" | "DOCX") {
-    const topic = topics.find((item) => item.id === activeTopicId);
-    const title = `${artifact} — ${topic?.titulo ?? subject?.nome ?? "Material"}`;
-    const paragraphs = [
-      `${subject?.nome ?? ""} · ${classroom?.nome ?? ""} · ${term}`,
-      `Documento-base: ${uploadedFile}`,
-      "Objetivos de aprendizagem",
-      "Compreender os conceitos principais e aplicá-los em situações práticas.",
-      artifact === "Prova" ? "Avaliação" : artifact === "Atividade" ? "Atividade" : "Etapas da aula",
-      artifact === "Prova"
-        ? "Responda às questões a seguir. Considere os conceitos estudados e justifique suas respostas."
-        : "Desenvolva uma solução para o tema proposto e justifique suas escolhas.",
-      "1. Explique os conceitos fundamentais relacionados ao tópico.",
-      "2. Aplique o conteúdo em um exemplo prático.",
-    ];
-    const filename = `${artifact.toLowerCase()}-${(topic?.titulo ?? "material").toLowerCase().replaceAll(" ", "-")}`;
+  function exportDocument(format: "PDF" | "DOCX", includeTeacherNotes = false) {
+    if (!generatedMaterial) {
+      notify("Gere um material antes de exportar.");
+      return;
+    }
+    let contentForExport = generatedMaterial.conteudo;
+    let title = generatedMaterial.titulo;
+    if (!includeTeacherNotes) {
+      const studentContent = { ...generatedMaterial.conteudo };
+      delete studentContent.gabaritoComentado;
+      delete studentContent.rubrica;
+      contentForExport = studentContent;
+      if (generatedMaterial.tipo === "prova") {
+        const versions = generatedMaterial.conteudo.versoes;
+        const selectedVersion = versions && typeof versions === "object" && !Array.isArray(versions)
+          ? (versions as Record<string, unknown>)[examExportVersion]
+          : null;
+        const versionContent = selectedVersion && typeof selectedVersion === "object" && !Array.isArray(selectedVersion)
+          ? selectedVersion as Record<string, unknown>
+          : null;
+        if (!versionContent) {
+          notify(`A versão ${examExportVersion} da prova não está disponível.`);
+          return;
+        }
+        const examDetails = { ...studentContent };
+        delete examDetails.versoes;
+        delete examDetails.matrizAvaliacao;
+        contentForExport = {
+          ...examDetails,
+          versao: examExportVersion,
+          questoes: versionContent.questoes,
+        };
+        title = `${title} — Versão ${examExportVersion}`;
+      }
+    }
+    const paragraphs = flattenMaterial(contentForExport);
+    const filename = title.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-").replaceAll(/^-|-$/g, "");
 
     if (format === "PDF") {
       const printWindow = window.open("", "_blank", "width=900,height=720");
@@ -416,10 +494,10 @@ export default function Home() {
         notify("Permita pop-ups para abrir a visualização de impressão em PDF.");
         return;
       }
-      const body = paragraphs.map((paragraph, index) =>
-        index === 2 || index === 4
-          ? `<h2>${escapeHtml(paragraph)}</h2>`
-          : `<p>${escapeHtml(paragraph)}</p>`,
+      const body = paragraphs.map((paragraph) =>
+        paragraph.heading
+          ? `<h2>${escapeHtml(paragraph.text)}</h2>`
+          : `<p>${escapeHtml(paragraph.text)}</p>`,
       ).join("");
       printWindow.document.write(`<html lang="pt-BR"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font:14px Arial,sans-serif;color:#24242a;max-width:760px;margin:48px auto;line-height:1.55}header{border-bottom:2px solid #6a5ae0;padding-bottom:16px;margin-bottom:22px}header small{color:#777}h1{font-size:23px;margin:20px 0 6px}h2{font-size:15px;margin-top:25px;color:#5146ac}p{margin:8px 0}.questions{columns:2;column-gap:28px}@media print{body{margin:20mm auto}}</style></head><body><header><strong>PréPrompto</strong><small> · Material didático</small></header><h1>${escapeHtml(title)}</h1><div class="questions">${body}</div><script>window.onload=()=>window.print()</script></body></html>`);
       printWindow.document.close();
@@ -430,7 +508,7 @@ export default function Home() {
     const xmlEscape = (value: string) => escapeHtml(value).replaceAll("&apos;", "&apos;");
     const documentParagraphs = [
       `<w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>${xmlEscape(title)}</w:t></w:r></w:p>`,
-      ...paragraphs.map((paragraph, index) => `<w:p>${index === 2 || index === 4 ? `<w:pPr><w:pStyle w:val="Heading2"/></w:pPr>` : ""}<w:r><w:t xml:space="preserve">${xmlEscape(paragraph)}</w:t></w:r></w:p>`),
+      ...paragraphs.map((paragraph) => `<w:p>${paragraph.heading ? `<w:pPr><w:pStyle w:val="Heading2"/></w:pPr>` : ""}<w:r><w:t xml:space="preserve">${xmlEscape(paragraph.text)}</w:t></w:r></w:p>`),
       `<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720"/></w:sectPr>`,
     ].join("");
     const docxBytes = createZip([
@@ -465,6 +543,7 @@ export default function Home() {
               const id = event.target.value;
               setSelectedSubject(id);
               setSelectedClass(appData.turmas.find((item) => item.materia_id === id)?.id ?? "");
+              setActiveTopicId(appData.topicos.find((item) => item.materia_id === id)?.id ?? "");
             }}>
               {appData.materias.map((item) => <option key={item.id} value={item.id}>{item.nome}</option>)}
             </select>
@@ -514,16 +593,16 @@ export default function Home() {
                   <p className="page-subtitle">Acompanhe o conteúdo do semestre e transforme cada tópico em material de aula.</p>
                 </div>
                 <div className="heading-actions">
-                  <label className="class-select"><GraduationCap size={15} /><select value={selectedClass} onChange={(event) => setSelectedClass(event.target.value)}>{appData.turmas.filter((item) => item.materia_id === subject.id).map((item) => <option key={item.id} value={item.id}>{item.nome}</option>)}</select><ChevronDown size={14} /></label>
-                  <button className="button button-outline" onClick={() => setManagementOpen(true)}><Plus size={15} /> Matéria / turma</button>
-                  <button className="button button-primary" onClick={() => fileInputRef.current?.click()} disabled={isPending}><Plus size={16} /> Nova ementa</button>
+                  <label className="class-select"><GraduationCap size={15} /><select value={selectedClass} onChange={(event) => setSelectedClass(event.target.value)} aria-label="Selecionar turma">{!appData.turmas.some((item) => item.materia_id === subject.id) && <option value="">Sem turmas</option>}{appData.turmas.filter((item) => item.materia_id === subject.id).map((item) => <option key={item.id} value={item.id}>{item.nome}</option>)}</select><ChevronDown size={14} /></label>
+                  <button className="button button-outline" onClick={() => setManagementMode("turma")}><Plus size={15} /> Nova turma</button>
+                  <button className="button button-outline" onClick={() => setManagementMode("materia")}><Plus size={15} /> Nova matéria</button>
                 </div>
               </div>
 
               <input ref={fileInputRef} type="file" accept=".pdf,.doc,.docx,.txt" className="sr-only" onChange={handleFile} />
               <button className="upload-strip" onClick={() => fileInputRef.current?.click()}>
                 <span className="upload-symbol"><CloudUpload size={21} /></span>
-                <span className="upload-copy"><strong>Adicione sua ementa ou documento-base</strong><span>{isPending ? "Enviando arquivo para o armazenamento privado…" : uploadedFile ? <>Última ementa: <b>{uploadedFile}</b></> : "Selecione um PDF, DOCX ou TXT para armazenar na sua conta"}</span></span>
+                <span className="upload-copy"><strong>Adicionar ementa ou documento-base</strong><span>{isPending ? "Enviando arquivo para o armazenamento privado…" : uploadedFile ? <>Última ementa: <b>{uploadedFile}</b></> : "Selecione um PDF, DOCX ou TXT para armazenar na sua conta"}</span></span>
                 <span className="upload-action"><Upload size={14} /> Selecionar arquivo</span>
               </button>
 
@@ -578,6 +657,8 @@ export default function Home() {
           {screen === "studio" && (
             <StudioScreen
               topics={topics}
+              selectedTopic={topics.some((item) => item.id === activeTopicId) ? activeTopicId : topics[0]?.id ?? ""}
+              onSelectedTopic={setActiveTopicId}
               uploadedFile={uploadedFile}
               fileInputRef={fileInputRef}
               onFile={handleFile}
@@ -619,48 +700,30 @@ export default function Home() {
         </div>
       </section>
 
-      {managementOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setManagementOpen(false); }}>
+      {managementMode && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setManagementMode(null); }}>
         <section className="generator-modal" role="dialog" aria-modal="true" aria-labelledby="management-title">
-          <div className="modal-topline"><span className="modal-icon"><GraduationCap size={18} /></span><button className="icon-button" aria-label="Fechar" onClick={() => setManagementOpen(false)}><X size={18} /></button></div>
-          <span className="section-kicker">GESTÃO ACADÊMICA</span><h2 id="management-title">Adicionar matéria e turma</h2>
-          <form action={createSubjectAndClass} className="onboarding-form modal-form">
-            <label>Matéria<input name="materia" required placeholder="Ex.: Estrutura de Dados" /></label>
-            <label>Turma<input name="turma" required placeholder="Ex.: Turma A — Noturno" /></label>
-            <div className="form-row">
-              <label>Ano letivo<input name="anoLetivo" type="number" min="2000" max="2200" defaultValue={new Date().getFullYear()} required /></label>
-              <label>Semestre<select name="semestre" defaultValue=""><option value="">Selecione</option>{Array.from({ length: 12 }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}º semestre</option>)}</select></label>
-            </div>
-            <label>Turno<input name="turno" placeholder="Ex.: Noturno" /></label>
-            <div className="modal-footer"><button type="button" className="button button-quiet" onClick={() => setManagementOpen(false)}>Cancelar</button><button className="button button-primary" disabled={isPending}><Plus size={15} /> Salvar</button></div>
-          </form>
-          <div className="management-divider"><span>OU</span></div>
-          <h3 className="management-subheading">Adicionar turma a {subject.nome}</h3>
-          <form action={async (formData) => {
-            const className = String(formData.get("turmaExistente") ?? "");
-            const semesterValue = String(formData.get("semestreExistente") ?? "");
-            startTransition(async () => {
-              const result = await criarTurma({
-                materiaId: selectedSubjectRecord?.id ?? "",
-                nome: className,
-                semestre: semesterValue ? Number(semesterValue) : null,
-                turno: String(formData.get("turnoExistente") ?? ""),
-              });
-              if (result.error || !result.data) {
-                notify(result.error ?? "Não foi possível criar a turma.");
-                return;
-              }
-              setManagementOpen(false);
-              await refreshData(selectedSubjectRecord?.id, result.data.id);
-              notify("Turma adicionada.");
-            });
-          }} className="onboarding-form modal-form">
-            <label>Nome da turma<input name="turmaExistente" required placeholder="Ex.: Turma B — Matutino" /></label>
-            <div className="form-row">
-              <label>Semestre<select name="semestreExistente" defaultValue=""><option value="">Selecione</option>{Array.from({ length: 12 }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}º semestre</option>)}</select></label>
-              <label>Turno<input name="turnoExistente" placeholder="Ex.: Matutino" /></label>
-            </div>
-            <button className="button button-outline" disabled={isPending}><Plus size={15} /> Adicionar turma</button>
-          </form>
+          <div className="modal-topline"><span className="modal-icon"><GraduationCap size={18} /></span><button className="icon-button" aria-label="Fechar" onClick={() => setManagementMode(null)}><X size={18} /></button></div>
+          <span className="section-kicker">GESTÃO ACADÊMICA</span>
+          {managementMode === "materia" ? <>
+            <h2 id="management-title">Nova matéria</h2>
+            <p className="modal-description">Cadastre uma disciplina. Depois, adicione uma ou mais turmas a ela.</p>
+            <form action={createSubjectOnly} className="onboarding-form modal-form">
+      <label>Nome da matéria<input name="materia" required maxLength={160} placeholder="Ex.: Estrutura de Dados" /></label>
+      <label>Ano letivo<input name="anoLetivo" type="number" min="2000" max="2200" defaultValue={new Date().getFullYear()} required /></label>
+      <div className="modal-footer"><button type="button" className="button button-quiet" onClick={() => setManagementMode(null)}>Cancelar</button><button className="button button-primary" disabled={isPending}><Plus size={15} /> Criar matéria</button></div>
+            </form>
+          </> : <>
+            <h2 id="management-title">Nova turma</h2>
+            <p className="modal-description">A turma será vinculada à matéria selecionada: <strong>{subject.nome}</strong>.</p>
+            <form action={createClassForSelectedSubject} className="onboarding-form modal-form">
+              <label>Nome da turma<input name="turma" required maxLength={120} placeholder="Ex.: Turma A — Noturno" /></label>
+              <div className="form-row">
+                <label>Semestre<select name="semestre" defaultValue=""><option value="">Selecione</option>{Array.from({ length: 12 }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}º semestre</option>)}</select></label>
+                <label>Turno<input name="turno" placeholder="Ex.: Noturno" /></label>
+              </div>
+              <div className="modal-footer"><button type="button" className="button button-quiet" onClick={() => setManagementMode(null)}>Cancelar</button><button className="button button-primary" disabled={isPending}><Plus size={15} /> Criar turma</button></div>
+            </form>
+          </>}
           <p className="modal-disclaimer">O cadastro é salvo na sua conta do PréPrompto.</p>
         </section>
       </div>}
@@ -676,17 +739,52 @@ export default function Home() {
           </form>
         </section>
       </div>}
-      {modalOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setModalOpen(false); }}>
+      {modalOpen && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (!isGenerating && event.target === event.currentTarget) setModalOpen(false); }}>
         <section className="generator-modal" role="dialog" aria-modal="true" aria-labelledby="generator-title">
-          <div className="modal-topline"><span className="modal-icon"><Sparkles size={18} /></span><button className="icon-button" aria-label="Fechar" onClick={() => setModalOpen(false)}><X size={18} /></button></div>
-          <span className="section-kicker">ESTEIRA DE CRIAÇÃO</span><h2 id="generator-title">O que vamos preparar?</h2><p className="modal-description">Escolha o formato e a gente organiza um rascunho a partir da sua ementa.</p>
-          <div className="artifact-options">
-            {(["Roteiro", "Atividade", "Prova"] as Artifact[]).map((option) => <button key={option} className={`artifact-option ${artifact === option ? "artifact-selected" : ""}`} onClick={() => setArtifact(option)}><span className="artifact-option-icon">{option === "Roteiro" ? <BookOpen size={18} /> : option === "Atividade" ? <FilePlus2 size={18} /> : <ClipboardCheck size={18} />}</span><span><strong>{option}</strong><small>{option === "Roteiro" ? "Plano de aula estruturado" : option === "Atividade" ? "Exercícios para praticar" : "Avaliação com gabarito"}</small></span>{artifact === option && <CheckCircle2 size={17} className="selected-check" />}</button>)}
+          <div className="modal-topline"><span className="modal-icon"><Sparkles size={18} /></span><button className="icon-button" aria-label={isGenerating ? "Geração em andamento" : "Fechar"} onClick={() => { if (!isGenerating) setModalOpen(false); }} disabled={isGenerating}><X size={18} /></button></div>
+          {!isGenerating ? <>
+            <span className="section-kicker">ESTEIRA DE CRIAÇÃO</span><h2 id="generator-title">Gerar material com IA</h2><p className="modal-description">A IA combinará o tópico, a ementa e suas preferências para criar um material completo.</p>
+            <div className="artifact-options">
+              {(["Roteiro", "Atividade", "Prova"] as Artifact[]).map((option) => <button key={option} className={`artifact-option ${artifact === option ? "artifact-selected" : ""}`} onClick={() => setArtifact(option)}><span className="artifact-option-icon">{option === "Roteiro" ? <BookOpen size={18} /> : option === "Atividade" ? <FilePlus2 size={18} /> : <ClipboardCheck size={18} />}</span><span><strong>{option}</strong><small>{option === "Roteiro" ? "Plano de aula estruturado" : option === "Atividade" ? "Exercícios para praticar" : "Avaliação com gabarito"}</small></span>{artifact === option && <CheckCircle2 size={17} className="selected-check" />}</button>)}
+            </div>
+            <label className="form-label">TÓPICO DA EMENTA<select value={activeTopicId} onChange={(event) => setActiveTopicId(event.target.value)}>{topics.map((topic) => <option key={topic.id} value={topic.id}>{topic.titulo}</option>)}</select><ChevronDown size={15} /></label>
+            <div className="modal-template"><div><span className="template-icon"><FileText size={16} /></span><span><strong>Padrão selecionado</strong><small>{presets.filter((preset) => preset.ativo).length} preferências serão aplicadas</small></span></div><button onClick={() => { setModalOpen(false); setScreen("presets"); }}>Editar</button></div>
+            {generationError && <p className="generation-error" role="alert">{generationError}</p>}
+            <div className="modal-footer"><button className="button button-quiet" onClick={() => setModalOpen(false)} disabled={isPending}>Cancelar</button><button className="button button-primary" onClick={generateArtifact} disabled={isPending}><Sparkles size={15} /> {isPending ? "Preparando…" : "Gerar material"}</button></div>
+            <p className="modal-disclaimer">O conteúdo gerado será salvo no seu histórico e poderá ser exportado em PDF ou DOCX.</p>
+          </> : <div className="generation-panel" aria-live="polite">
+            <span className="section-kicker">GERAÇÃO EM ANDAMENTO</span>
+            <h2 id="generator-title">Estamos criando seu material</h2>
+            <p className="generation-description">A IA está analisando o tópico e preparando um conteúdo alinhado à sua turma. Materiais completos podem levar alguns instantes.</p>
+            <div className="generation-progress" role="progressbar" aria-label="Geração do material em andamento" aria-valuetext="Aguarde enquanto o material é gerado">
+              <span />
+            </div>
+            <ElapsedTimer />
+            <div className="generation-steps">
+              <span><b>01</b> Leitura do tópico e das preferências</span>
+              <span><b>02</b> Elaboração do material pedagógico</span>
+              <span><b>03</b> Validação e salvamento na biblioteca</span>
+            </div>
+            <p className="modal-disclaimer">Mantenha esta janela aberta. Avisaremos assim que o material estiver pronto.</p>
+          </div>}
+        </section>
+      </div>}
+      {generatedMaterial && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setGeneratedMaterial(null); }}>
+        <section className="generated-modal" role="dialog" aria-modal="true" aria-labelledby="generated-title">
+          <div className="modal-topline"><span className="modal-icon"><CheckCircle2 size={18} /></span><button className="icon-button" aria-label="Fechar material" onClick={() => setGeneratedMaterial(null)}><X size={18} /></button></div>
+          <span className="section-kicker">MATERIAL GERADO E SALVO</span>
+          <h2 id="generated-title">{generatedMaterial.titulo}</h2>
+          {(generatedMaterial.tipo === "prova" || generatedMaterial.tipo === "atividade") && <p className="teacher-key-notice">Gabarito e critérios aparecem somente nesta prévia. A exportação padrão é a versão do estudante.</p>}
+          {generatedMaterial.tipo === "prova" && <label className="exam-version-select">VERSÃO PARA EXPORTAR<select value={examExportVersion} onChange={(event) => setExamExportVersion(event.target.value as "A" | "B")}><option value="A">Versão A — estudante</option><option value="B">Versão B — estudante</option></select></label>}
+          <div className="generated-preview">{Object.entries(generatedMaterial.conteudo).map(([key, value]) =>
+            <GeneratedSection key={key} name={key} value={value} />,
+          )}</div>
+          <div className="modal-footer">
+            <button className="button button-quiet" onClick={() => setGeneratedMaterial(null)}>Fechar</button>
+            {(generatedMaterial.tipo === "prova" || generatedMaterial.tipo === "atividade") && <button className="button button-outline" onClick={() => exportDocument("DOCX", true)}><FileCheck2 size={15} /> DOCX professor</button>}
+            <button className="button button-outline" onClick={() => exportDocument("DOCX")}><FileCheck2 size={15} /> DOCX aluno</button>
+            <button className="button button-primary" onClick={() => exportDocument("PDF")}><FileText size={15} /> PDF aluno</button>
           </div>
-          <label className="form-label">TÓPICO DA EMENTA<select value={activeTopicId} onChange={(event) => setActiveTopicId(event.target.value)}>{topics.map((topic) => <option key={topic.id} value={topic.id}>{topic.titulo}</option>)}</select><ChevronDown size={15} /></label>
-          <div className="modal-template"><div><span className="template-icon"><FileText size={16} /></span><span><strong>Padrão selecionado</strong><small>{presets.filter((preset) => preset.ativo).length} preferências serão aplicadas</small></span></div><button onClick={() => { setModalOpen(false); setScreen("presets"); }}>Editar</button></div>
-          <div className="modal-footer"><button className="button button-quiet" onClick={() => setModalOpen(false)}>Cancelar</button><button className="button button-primary" onClick={generateArtifact} disabled={isPending}><Sparkles size={15} /> Salvar rascunho</button></div>
-          <p className="modal-disclaimer">O rascunho será persistido; geração por IA ainda não está conectada.</p>
         </section>
       </div>}
       {toast && <div className="toast"><CheckCircle2 size={17} /> {toast}</div>}
@@ -736,6 +834,20 @@ function NavButton({ icon, active, onClick, children }: { icon: React.ReactNode;
   return <button className={`nav-button ${active ? "nav-active" : ""}`} onClick={onClick}><span className="nav-icon">{icon}</span><span className="nav-text">{children}</span>{active && <span className="nav-active-mark" />}</button>;
 }
 
+function ElapsedTimer() {
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+
+  useEffect(() => {
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  return <p className="generation-elapsed">Tempo decorrido: <strong>{formatElapsedTime(elapsedSeconds)}</strong></p>;
+}
+
 function Metric({ icon, value, label, accent }: { icon: React.ReactNode; value: number; label: string; accent: string }) {
   return <div className="metric-card"><span className={`metric-icon ${accent}`}>{icon}</span><div className="metric-value">{value}</div><div className="metric-label">{label}</div></div>;
 }
@@ -746,6 +858,60 @@ function StatusPill({ status }: { status: Progress }) {
 
 function escapeHtml(value: string) {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
+}
+
+function fieldLabel(value: string) {
+  const spaced = value.replaceAll(/([A-Z])/g, " $1").replaceAll("_", " ");
+  return `${spaced.charAt(0).toUpperCase()}${spaced.slice(1)}`;
+}
+
+function formatElapsedTime(seconds: number) {
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return minutes ? `${minutes} min ${String(remainingSeconds).padStart(2, "0")} s` : `${remainingSeconds} s`;
+}
+
+function flattenMaterial(content: Record<string, unknown>) {
+  const paragraphs: { text: string; heading: boolean }[] = [];
+  function visit(value: unknown, label: string, depth: number) {
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => visit(item, `${label} ${index + 1}`, depth + 1));
+      return;
+    }
+    if (value && typeof value === "object") {
+      const record = value as Record<string, unknown>;
+      paragraphs.push({ text: `${"  ".repeat(Math.min(depth, 4))}${fieldLabel(label)}`, heading: true });
+      for (const [key, item] of Object.entries(record)) visit(item, key, depth + 1);
+      return;
+    }
+    if (value !== null && value !== undefined && value !== "") {
+      const text = typeof value === "string" ? value : String(value);
+      paragraphs.push({ text: `${"  ".repeat(Math.min(depth, 4))}${fieldLabel(label)}: ${text}`, heading: false });
+    }
+  }
+  for (const [key, value] of Object.entries(content)) visit(value, key, 0);
+  return paragraphs;
+}
+
+function GeneratedSection({ name, value }: { name: string; value: unknown }) {
+  return <section className="generated-section">
+    <h3>{fieldLabel(name)}</h3>
+    <GeneratedValue value={value} />
+  </section>;
+}
+
+function GeneratedValue({ value }: { value: unknown }): React.ReactNode {
+  if (Array.isArray(value)) {
+    return <div className="generated-list">{value.map((item, index) =>
+      <div className="generated-item" key={index}><span className="generated-item-number">{String(index + 1).padStart(2, "0")}</span><GeneratedValue value={item} /></div>,
+    )}</div>;
+  }
+  if (value && typeof value === "object") {
+    return <div className="generated-object">{Object.entries(value as Record<string, unknown>).map(([key, item]) =>
+      <div className="generated-field" key={key}><strong>{fieldLabel(key)}</strong><GeneratedValue value={item} /></div>,
+    )}</div>;
+  }
+  return <p className="generated-text">{value === null || value === undefined ? "—" : String(value)}</p>;
 }
 
 function createZip(entries: { name: string; content: string }[]) {
@@ -810,18 +976,19 @@ function concatenateBytes(parts: Uint8Array[]) {
   return result;
 }
 
-function StudioScreen({ topics, uploadedFile, fileInputRef, onFile, onGenerate, onOpenPresets, onExport, provas }: {
+function StudioScreen({ topics, selectedTopic, onSelectedTopic, uploadedFile, fileInputRef, onFile, onGenerate, onOpenPresets, onExport, provas }: {
   topics: TopicRecord[];
+  selectedTopic: string;
+  onSelectedTopic: (id: string) => void;
   uploadedFile: string;
   provas: AppData["provas"];
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   onFile: (event: ChangeEvent<HTMLInputElement>) => void;
   onGenerate: (topicId?: string, artifact?: Artifact) => void;
   onOpenPresets: () => void;
-  onExport: (format: "PDF" | "DOCX") => void;
+  onExport: (format: "PDF" | "DOCX", includeTeacherNotes?: boolean) => void;
 }) {
   const [selectedType, setSelectedType] = useState<Artifact>("Roteiro");
-  const [selectedTopic, setSelectedTopic] = useState(topics[0]?.id ?? "");
   const [correctionOpen, setCorrectionOpen] = useState(false);
   const [correctionTopic, setCorrectionTopic] = useState("");
   const [correctionMessage, setCorrectionMessage] = useState("");
@@ -840,7 +1007,7 @@ function StudioScreen({ topics, uploadedFile, fileInputRef, onFile, onGenerate, 
     <div className="studio-layout">
       <div className="studio-main">
         <div className="studio-card source-card">
-          <div className="card-title-row"><div className="number-badge">01</div><div><span className="section-kicker">FONTE DE CONTEÚDO</span><h2>Comece pelo seu documento</h2></div><span className="ready-tag"><Check size={12} /> Documento pronto</span></div>
+          <div className="card-title-row"><div className="number-badge">01</div><div><span className="section-kicker">FONTE DE CONTEÚDO</span><h2>Comece pelo seu documento</h2></div><span className="ready-tag">{uploadedFile ? <><Check size={12} /> Documento pronto</> : "Documento opcional"}</span></div>
           <div className="source-file"><span className="source-file-icon"><FileText size={19} /></span><div><strong>{uploadedFile || "Nenhum documento selecionado"}</strong><span>{uploadedFile ? "Documento-base · PDF / DOCX / TXT" : "Adicione a ementa ou o conteúdo da aula"}</span></div><button className="button button-outline button-small" onClick={() => fileInputRef.current?.click()}><Upload size={14} /> Trocar arquivo</button></div>
           <input ref={fileInputRef} type="file" accept=".pdf,.doc,.docx,.txt" className="sr-only" onChange={onFile} />
         </div>
@@ -848,9 +1015,9 @@ function StudioScreen({ topics, uploadedFile, fileInputRef, onFile, onGenerate, 
         <div className="studio-card create-card">
           <div className="card-title-row"><div className="number-badge">02</div><div><span className="section-kicker">NOVO MATERIAL</span><h2>O que você quer criar?</h2></div></div>
           <div className="create-type-grid">{(["Roteiro", "Atividade", "Prova"] as Artifact[]).map((type) => <button key={type} className={`create-type ${selectedType === type ? "create-type-active" : ""}`} onClick={() => setSelectedType(type)}><span className="create-type-icon">{type === "Roteiro" ? <BookOpen size={20} /> : type === "Atividade" ? <FilePlus2 size={20} /> : <ClipboardCheck size={20} />}</span><strong>{type}</strong><span>{type === "Roteiro" ? "Plano de aula completo" : type === "Atividade" ? "Prática para a turma" : "Avaliação e gabarito"}</span>{selectedType === type && <CheckCircle2 size={16} className="type-check" />}</button>)}</div>
-          <div className="form-row"><label className="form-label">TÓPICO DA EMENTA<select value={selectedTopic} onChange={(event) => setSelectedTopic(event.target.value)}>{topics.map((topic) => <option key={topic.id} value={topic.id}>{topic.titulo}</option>)}</select><ChevronDown size={15} /></label><label className="form-label">LAYOUT DO MATERIAL<select defaultValue="Padrão escolar · 2 colunas"><option>Padrão escolar · 2 colunas</option><option>Folha de atividades</option><option>Plano de aula</option></select><ChevronDown size={15} /></label></div>
-          <div className="presets-applied"><span className="applied-icon"><Settings2 size={15} /></span><span><strong>Seus pré-promptos ativos</strong><small>Aplicados ao próximo rascunho</small></span><button onClick={onOpenPresets}>Ver padrões <ArrowRight size={13} /></button></div>
-          <div className="studio-submit"><span><Sparkles size={15} /> Pronto em poucos segundos</span><button className="button button-primary" onClick={() => onGenerate(selectedTopic, selectedType)}><Sparkles size={16} /> Preparar {selectedType.toLowerCase()} <ArrowRight size={15} /></button></div>
+          <div className="form-row"><label className="form-label">TÓPICO DA EMENTA<select value={selectedTopic} onChange={(event) => onSelectedTopic(event.target.value)}>{topics.map((topic) => <option key={topic.id} value={topic.id}>{topic.titulo}</option>)}</select><ChevronDown size={15} /></label><label className="form-label">LAYOUT DO MATERIAL<select defaultValue="Padrão escolar · 2 colunas"><option>Padrão escolar · 2 colunas</option><option>Folha de atividades</option><option>Plano de aula</option></select><ChevronDown size={15} /></label></div>
+          <div className="presets-applied"><span className="applied-icon"><Settings2 size={15} /></span><span><strong>Seus pré-promptos ativos</strong><small>Preferências aplicáveis incorporadas ao material</small></span><button onClick={onOpenPresets}>Ver padrões <ArrowRight size={13} /></button></div>
+          <div className="studio-submit"><span><Sparkles size={15} /> Plano pedagógico pronto em poucos segundos</span><button className="button button-primary" onClick={() => onGenerate(selectedTopic, selectedType)}><Sparkles size={16} /> Gerar {selectedType.toLowerCase()} <ArrowRight size={15} /></button></div>
         </div>
 
         <div className="studio-card correction-card">
