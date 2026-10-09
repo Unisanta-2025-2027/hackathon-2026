@@ -479,8 +479,35 @@ h1 { display: flex; align-items: center; gap: 12px; margin-bottom: 9px; color: #
 .generated-field > strong { color: #777986; font-size: 9px; font-weight: 700; text-transform: capitalize; }
 .generated-text { margin: 0; color: #555762; font-size: 10px; line-height: 1.65; white-space: pre-wrap; }
 .generated-modal .modal-footer { position: sticky; bottom: -22px; padding: 12px 0 0; background: #fff; }
+.syllabus-card { margin: -5px 0 18px; padding: 15px 19px; }
+.syllabus-heading { align-items: center; margin-bottom: 10px; }
+.syllabus-heading h2 { margin: 5px 0 0; color: #3c3e47; font-size: 13px; }
+.syllabus-list { padding: 0; margin: 0; list-style: none; }
+.syllabus-item { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 9px 0; border-top: 1px solid #f0f0f3; }
+.syllabus-file-icon { width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 7px; color: var(--violet); background: #f4f2ff; }
+.syllabus-item-copy { min-width: 0; flex: 1; }
+.syllabus-item-copy strong, .syllabus-item-copy small { display: block; overflow: hidden; text-overflow: ellipsis; }
+.syllabus-item-copy strong { color: #4b4d56; font-size: 10px; font-weight: 650; white-space: nowrap; }
+.syllabus-item-copy small { margin-top: 4px; color: #9699a2; font-size: 9px; line-height: 1.4; }
+.syllabus-delete-button { width: 30px; height: 30px; flex: 0 0 auto; border: 1px solid #efedf0; border-radius: 6px; }
+.syllabus-delete-button:hover, .topic-row-action:hover { color: #b43c49; border-color: #f0cbd0; background: #fff8f8; }
+.topic-table .action-col { width: 230px; }
+.topic-actions { display: flex; align-items: center; justify-content: flex-end; gap: 5px; }
+.topic-row-action { width: 27px; height: 27px; flex: 0 0 auto; border: 1px solid transparent; border-radius: 5px; }
+.topic-row-action:hover { color: var(--violet); border-color: #e6e2fb; background: #f8f7ff; }
+.danger-action:hover { color: #b43c49; border-color: #f0cbd0; background: #fff8f8; }
+.field-hint { color: #a1a4ad; font-size: 9px; font-weight: 400; letter-spacing: 0; }
+.confirm-delete-modal { width: min(100%, 470px); }
+.delete-modal-icon { color: #ad3946; background: #fff0f1; }
+.button-danger { color: #fff; border-color: #b83e4b; background: #b83e4b; }
+.button-danger:hover { border-color: #9f303d; background: #9f303d; }
+.button:disabled, .icon-button:disabled { opacity: .55; cursor: not-allowed; }
 @media (max-width: 650px) {
   .generated-modal { padding: 17px; }
   .generated-preview { max-height: 57vh; }
   .generated-modal .modal-footer { bottom: -17px; }
+  .syllabus-card { margin-top: -3px; padding-inline: 13px; }
+  .topic-actions { gap: 2px; }
+  .topic-actions .generate-link { font-size: 9px; }
+  .topic-row-action { width: 25px; height: 25px; }
 }

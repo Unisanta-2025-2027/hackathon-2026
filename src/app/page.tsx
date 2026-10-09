@@ -20,12 +20,14 @@ import {
   List,
   Menu,
   MoreHorizontal,
+  Pencil,
   Plus,
   Search,
   Settings2,
   SlidersHorizontal,
   Sparkles,
   Upload,
+  Trash2,
   X,
 } from "lucide-react";
 import {
@@ -38,11 +40,15 @@ import {
   criarMateria,
   criarPrePrompto,
   criarTurma,
+  atualizarTopico,
+  excluirEmenta,
+  excluirTopico,
   entrar,
   enviarEmenta,
   sair,
   type AppData,
   type MaterialGerado,
+  type SyllabusRecord,
   type TopicRecord,
 } from "./actions";
 import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
@@ -64,6 +70,9 @@ export default function Home() {
   const [topicsAscending, setTopicsSorted] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [managementMode, setManagementMode] = useState<"materia" | "turma" | null>(null);
+  const [editingTopic, setEditingTopic] = useState<TopicRecord | null>(null);
+  const [topicToDelete, setTopicToDelete] = useState<TopicRecord | null>(null);
+  const [syllabusToDelete, setSyllabusToDelete] = useState<SyllabusRecord | null>(null);
   const [artifact, setArtifact] = useState<Artifact>("Roteiro");
   const [activeTopicId, setActiveTopicId] = useState("");
   const [generatedMaterial, setGeneratedMaterial] = useState<MaterialGerado | null>(null);
@@ -347,6 +356,60 @@ export default function Home() {
     });
   }
 
+  async function editTopicFromForm(formData: FormData) {
+    if (!editingTopic) return;
+    const title = String(formData.get("titulo") ?? "");
+    const description = String(formData.get("descricao") ?? "");
+    const skillsText = String(formData.get("habilidades") ?? "");
+    const habilidades = skillsText
+      .split(/\r?\n/)
+      .map((habilidade) => habilidade.trim())
+      .filter(Boolean);
+    startTransition(async () => {
+      const result = await atualizarTopico({
+        topicoId: editingTopic.id,
+        titulo: title,
+        descricao: description,
+        habilidades,
+      });
+      if (result.error) {
+        notify(result.error);
+        return;
+      }
+      setEditingTopic(null);
+      await refreshData(selectedSubject, selectedClass);
+      notify("Tópico atualizado.");
+    });
+  }
+
+  async function confirmDeleteTopic() {
+    if (!topicToDelete) return;
+    startTransition(async () => {
+      const result = await excluirTopico(topicToDelete.id);
+      if (result.error) {
+        notify(result.error);
+        return;
+      }
+      setTopicToDelete(null);
+      await refreshData(selectedSubject, selectedClass);
+      notify("Tópico excluído. Os materiais salvos continuam na biblioteca, sem vínculo com esse tópico.");
+    });
+  }
+
+  async function confirmDeleteSyllabus() {
+    if (!syllabusToDelete) return;
+    startTransition(async () => {
+      const result = await excluirEmenta(syllabusToDelete.id);
+      if (result.error) {
+        notify(result.error);
+        return;
+      }
+      setSyllabusToDelete(null);
+      await refreshData(selectedSubject, selectedClass);
+      notify(result.data?.aviso ?? "Ementa, arquivo e tópicos vinculados excluídos.");
+    });
+  }
+
   async function togglePreset(id: string, active: boolean) {
     startTransition(async () => {
       const result = await alterarPrePrompto({ id, ativo: active });
@@ -604,6 +667,22 @@ export default function Home() {
                 <span className="upload-action"><Upload size={14} /> {isUploadingSyllabus ? "Processando…" : "Selecionar arquivo"}</span>
               </button>
 
+              {appData.ementas.some((item) => item.materia_id === subject.id) && <section className="overview-card syllabus-card" aria-label="Ementas desta matéria">
+                <div className="section-heading syllabus-heading"><div><span className="section-kicker">DOCUMENTOS-BASE</span><h2>Ementas adicionadas</h2></div><span className="topic-count">{appData.ementas.filter((item) => item.materia_id === subject.id).length}</span></div>
+                <ul className="syllabus-list">
+                  {appData.ementas.filter((item) => item.materia_id === subject.id).map((item) => (
+                    <li key={item.id} className="syllabus-item">
+                      <span className="syllabus-file-icon"><FileText size={17} /></span>
+                      <span className="syllabus-item-copy">
+                        <strong>{item.titulo}</strong>
+                        <small>{item.nome_arquivo ?? "Documento sem arquivo"} · {item.situacao_extracao === "concluido" ? "Tópicos extraídos" : item.situacao_extracao === "processando" ? "Extração em andamento" : item.situacao_extracao === "falhou" ? `Falha na extração: ${item.erro_extracao ?? "erro não identificado"}` : "Aguardando extração"}</small>
+                      </span>
+                      <button className="icon-button syllabus-delete-button" aria-label={`Excluir ementa ${item.titulo}`} title="Excluir ementa" onClick={() => setSyllabusToDelete(item)} disabled={isPending || isUploadingSyllabus}><Trash2 size={16} /></button>
+                    </li>
+                  ))}
+                </ul>
+              </section>}
+
               <section className="overview-card tracker-summary">
                 <div className="section-heading summary-heading">
                   <div><span className="section-kicker">ACOMPANHAMENTO</span><h2>Ementa Tracker <span className="heading-separator">/</span> Cobertura do semestre</h2></div>
@@ -639,7 +718,7 @@ export default function Home() {
                           <td><StatusPill status={topic.roteiro} /></td>
                           <td><StatusPill status={topic.atividade} /></td>
                           <td><StatusPill status={topic.prova} /></td>
-                          <td><button className="generate-link" onClick={() => openGenerator(topic.id)}>Criar material <ArrowRight size={13} /></button></td>
+                          <td><div className="topic-actions"><button className="generate-link" onClick={() => openGenerator(topic.id)}>Criar material <ArrowRight size={13} /></button><button className="icon-button topic-row-action" aria-label={`Editar tópico ${topic.titulo}`} title="Editar tópico" onClick={() => setEditingTopic(topic)}><Pencil size={15} /></button><button className="icon-button topic-row-action danger-action" aria-label={`Excluir tópico ${topic.titulo}`} title="Excluir tópico" onClick={() => setTopicToDelete(topic)}><Trash2 size={15} /></button></div></td>
                         </tr>
                       ))}
                       {visibleTopics.length === 0 && <tr><td colSpan={6} className="empty-state">{topics.length ? "Nenhum tópico encontrado. Tente mudar a busca ou o filtro." : "Envie um documento-base para identificar os tópicos automaticamente."}</td></tr>}
@@ -700,6 +779,34 @@ export default function Home() {
         </div>
       </section>
 
+      {editingTopic && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (!isPending && event.target === event.currentTarget) setEditingTopic(null); }}>
+        <section className="generator-modal" role="dialog" aria-modal="true" aria-labelledby="edit-topic-title">
+          <div className="modal-topline"><span className="modal-icon"><Pencil size={17} /></span><button className="icon-button" aria-label="Fechar edição" onClick={() => setEditingTopic(null)} disabled={isPending}><X size={18} /></button></div>
+          <span className="section-kicker">CONTEÚDO PROGRAMÁTICO</span><h2 id="edit-topic-title">Editar tópico</h2>
+          <form action={editTopicFromForm} className="onboarding-form modal-form">
+            <label>Nome do tópico<input name="titulo" required maxLength={200} defaultValue={editingTopic.titulo} /></label>
+            <label>Descrição<textarea name="descricao" rows={3} maxLength={2000} defaultValue={editingTopic.descricao ?? ""} /></label>
+            <label>Habilidades <span className="field-hint">Uma habilidade por linha, até 12.</span><textarea name="habilidades" rows={4} maxLength={3600} defaultValue={editingTopic.habilidades.join("\n")} /></label>
+            <div className="modal-footer"><button type="button" className="button button-quiet" onClick={() => setEditingTopic(null)} disabled={isPending}>Cancelar</button><button className="button button-primary" disabled={isPending}><Check size={15} /> {isPending ? "Salvando…" : "Salvar alterações"}</button></div>
+          </form>
+        </section>
+      </div>}
+      {topicToDelete && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (!isPending && event.target === event.currentTarget) setTopicToDelete(null); }}>
+        <section className="generator-modal confirm-delete-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-topic-title">
+          <div className="modal-topline"><span className="modal-icon delete-modal-icon"><Trash2 size={17} /></span><button className="icon-button" aria-label="Fechar confirmação" onClick={() => setTopicToDelete(null)} disabled={isPending}><X size={18} /></button></div>
+          <span className="section-kicker">EXCLUIR CONTEÚDO</span><h2 id="delete-topic-title">Excluir tópico?</h2>
+          <p className="modal-description">O tópico <strong>{topicToDelete.titulo}</strong> será removido da ementa. Materiais já gerados permanecerão salvos, mas deixarão de estar vinculados a ele.</p>
+          <div className="modal-footer"><button className="button button-quiet" onClick={() => setTopicToDelete(null)} disabled={isPending}>Cancelar</button><button className="button button-danger" onClick={confirmDeleteTopic} disabled={isPending}><Trash2 size={15} /> {isPending ? "Excluindo…" : "Excluir tópico"}</button></div>
+        </section>
+      </div>}
+      {syllabusToDelete && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (!isPending && event.target === event.currentTarget) setSyllabusToDelete(null); }}>
+        <section className="generator-modal confirm-delete-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-syllabus-title">
+          <div className="modal-topline"><span className="modal-icon delete-modal-icon"><Trash2 size={17} /></span><button className="icon-button" aria-label="Fechar confirmação" onClick={() => setSyllabusToDelete(null)} disabled={isPending}><X size={18} /></button></div>
+          <span className="section-kicker">EXCLUIR DOCUMENTO-BASE</span><h2 id="delete-syllabus-title">Excluir esta ementa?</h2>
+          <p className="modal-description"><strong>{syllabusToDelete.titulo}</strong>{syllabusToDelete.nome_arquivo ? ` (${syllabusToDelete.nome_arquivo})` : ""} e os {appData.topicos.filter((topic) => topic.ementa_id === syllabusToDelete.id).length} tópico(s) vinculados serão excluídos. O arquivo associado será removido, se houver. Materiais gerados ficam salvos, sem vínculo com os tópicos excluídos.</p>
+          <div className="modal-footer"><button className="button button-quiet" onClick={() => setSyllabusToDelete(null)} disabled={isPending}>Cancelar</button><button className="button button-danger" onClick={confirmDeleteSyllabus} disabled={isPending}><Trash2 size={15} /> {isPending ? "Excluindo…" : "Excluir ementa"}</button></div>
+        </section>
+      </div>}
       {managementMode && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setManagementMode(null); }}>
         <section className="generator-modal" role="dialog" aria-modal="true" aria-labelledby="management-title">
           <div className="modal-topline"><span className="modal-icon"><GraduationCap size={18} /></span><button className="icon-button" aria-label="Fechar" onClick={() => setManagementMode(null)}><X size={18} /></button></div>

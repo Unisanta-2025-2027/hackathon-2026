@@ -56,4 +56,4 @@ npx supabase start
 npx supabase migration up
 ```
 
-O perfil do professor é criado automaticamente a partir do Supabase Auth. Cadastro, login, matérias, turmas, upload de ementas, extração automática de tópicos, pré-promptos e geração de roteiros, atividades e provas usam o banco. As gerações são validadas antes de salvar; provas incluem versões A/B, gabarito comentado e rubrica. A leitura automática de respostas manuscritas e correção por IA ainda não estão implementadas.
+O perfil do professor é criado automaticamente a partir do Supabase Auth. Cadastro, login, matérias, turmas, upload e exclusão de ementas, extração automática, edição e exclusão de tópicos, pré-promptos e geração de roteiros, atividades e provas usam o banco. As gerações são validadas antes de salvar; provas incluem versões A/B, gabarito comentado e rubrica. A leitura automática de respostas manuscritas e correção por IA ainda não estão implementadas.

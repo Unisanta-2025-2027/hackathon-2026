@@ -33,12 +33,14 @@ export type SyllabusUploadResult = {
   topicosCriados: number;
   aviso: string | null;
 };
+export type SyllabusDeleteResult = { aviso: string | null };
 export type TopicRecord = {
   id: string;
   ementa_id: string;
   materia_id: string;
   titulo: string;
   descricao: string | null;
+  habilidades: string[];
   situacao: "pendente" | "planejado" | "praticado" | "avaliado";
   roteiro: "Feito" | "Pendente" | "Não iniciado";
   atividade: "Feito" | "Pendente" | "Não iniciado";
@@ -96,7 +98,7 @@ export async function carregarDados(): Promise<ActionResult<AppData | null>> {
     supabase.from("materias").select("id,nome,ano_letivo").order("nome"),
     supabase.from("turmas").select("id,materia_id,nome,turno,semestre,ano_letivo").order("nome"),
     supabase.from("ementas").select("id,materia_id,titulo,nome_arquivo,criado_em,situacao_extracao,erro_extracao").order("criado_em", { ascending: false }),
-    supabase.from("topicos_ementa").select("id,ementa_id,materia_id,titulo,descricao,situacao,ordem").order("ordem"),
+    supabase.from("topicos_ementa").select("id,ementa_id,materia_id,titulo,descricao,habilidades,situacao,ordem").order("ordem"),
     supabase.from("pre_promptos").select("id,nome,descricao,ativo,tipos_artefato,nome_escola,nome_professor,instrucoes_fixas,colunas_layout,layout_compacto,familia_fonte,tamanho_fonte").order("criado_em"),
     supabase.from("artefatos").select("id,titulo,tipo,situacao"),
     supabase.from("artefatos_topicos").select("artefato_id,topico_id"),
@@ -148,6 +150,9 @@ export async function carregarDados(): Promise<ActionResult<AppData | null>> {
           materia_id: topic.materia_id,
           titulo: topic.titulo,
           descricao: topic.descricao,
+          habilidades: Array.isArray(topic.habilidades)
+            ? topic.habilidades.filter((habilidade): habilidade is string => typeof habilidade === "string")
+            : [],
           situacao: topic.situacao,
           roteiro: progress?.roteiro ?? "Não iniciado",
           atividade: progress?.atividade ?? "Não iniciado",
@@ -419,6 +424,86 @@ export async function atualizarSituacaoTopico(input: {
   if (error) return { data: null, error: errorMessage(error) };
   revalidatePath("/");
   return { data: undefined, error: null };
+}
+
+export async function atualizarTopico(input: {
+  topicoId: string;
+  titulo: string;
+  descricao: string;
+  habilidades: string[];
+}): Promise<ActionResult> {
+  if (
+    !isNonEmptyString(input?.topicoId) ||
+    !isNonEmptyString(input?.titulo) ||
+    input.titulo.trim().length > 200 ||
+    typeof input.descricao !== "string" ||
+    input.descricao.trim().length > 2000 ||
+    !Array.isArray(input.habilidades) ||
+    input.habilidades.length > 12 ||
+    !input.habilidades.every((habilidade) => typeof habilidade === "string" && habilidade.trim().length <= 300)
+  ) {
+    return { data: null, error: "Confira o título, a descrição e as habilidades informadas para o tópico." };
+  }
+  const { supabase, user } = await usuarioAutenticado();
+  const { error } = await supabase
+    .from("topicos_ementa")
+    .update({
+      titulo: input.titulo.trim(),
+      descricao: input.descricao.trim() || null,
+      habilidades: input.habilidades.map((habilidade) => habilidade.trim()).filter(Boolean),
+    })
+    .eq("id", input.topicoId)
+    .eq("professor_id", user.id);
+  if (error) return { data: null, error: errorMessage(error) };
+  revalidatePath("/");
+  return { data: undefined, error: null };
+}
+
+export async function excluirTopico(topicoId: string): Promise<ActionResult> {
+  if (!isNonEmptyString(topicoId)) return { data: null, error: "Selecione um tópico válido para excluir." };
+  const { supabase, user } = await usuarioAutenticado();
+  const { data, error } = await supabase
+    .from("topicos_ementa")
+    .delete()
+    .eq("id", topicoId)
+    .eq("professor_id", user.id)
+    .select("id")
+    .single();
+  if (error) return { data: null, error: errorMessage(error) };
+  if (!data) return { data: null, error: "O tópico não foi encontrado ou não pertence à sua conta." };
+  revalidatePath("/");
+  return { data: undefined, error: null };
+}
+
+export async function excluirEmenta(ementaId: string): Promise<ActionResult<SyllabusDeleteResult>> {
+  if (!isNonEmptyString(ementaId)) return { data: null, error: "Selecione uma ementa válida para excluir." };
+  const { supabase, user } = await usuarioAutenticado();
+  const { data: ementa, error: lookupError } = await supabase
+    .from("ementas")
+    .select("id,caminho_arquivo")
+    .eq("id", ementaId)
+    .eq("professor_id", user.id)
+    .single();
+  if (lookupError) return { data: null, error: errorMessage(lookupError) };
+
+  const { error: deleteError } = await supabase
+    .from("ementas")
+    .delete()
+    .eq("id", ementa.id)
+    .eq("professor_id", user.id);
+  if (deleteError) return { data: null, error: errorMessage(deleteError) };
+
+  let aviso: string | null = null;
+  if (ementa.caminho_arquivo) {
+    const { error: storageError } = await supabase.storage
+      .from("documentos-base")
+      .remove([ementa.caminho_arquivo]);
+    if (storageError) {
+      aviso = `A ementa e seus tópicos foram excluídos, mas o arquivo armazenado não pôde ser removido: ${errorMessage(storageError)}`;
+    }
+  }
+  revalidatePath("/");
+  return { data: { aviso }, error: null };
 }
 
 export async function criarPrePrompto(input: { nome: string }): Promise<ActionResult<TemplateRecord>> {
