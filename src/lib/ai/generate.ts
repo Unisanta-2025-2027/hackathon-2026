@@ -43,7 +43,34 @@ function questionsHaveValidPoints(questions: unknown, expectedTotal: number) {
     (sum, question) => sum + (isRecord(question) && typeof question.pontos === "number" ? question.pontos : 0),
     0,
   );
-  return Math.abs(total - expectedTotal) < 0.01;
+  return questions.every((question) =>
+    isRecord(question) &&
+    typeof question.pontos === "number" &&
+    question.pontos > 0,
+  ) &&
+    Math.abs(total - expectedTotal) < 0.01;
+}
+
+function validExamQuestions(questions: unknown): questions is Array<Record<string, unknown>> {
+  return Array.isArray(questions) &&
+    questions.length >= 5 &&
+    questions.length <= 8 &&
+    questions.every((question, index) =>
+      isRecord(question) &&
+      question.numero === index + 1 &&
+      ["objetiva", "aberta", "problema"].includes(String(question.tipo)) &&
+      isNonEmptyString(question.habilidade) &&
+      ["inicial", "intermediario", "avancado"].includes(String(question.nivel)) &&
+      isNonEmptyString(question.enunciado) &&
+      typeof question.pontos === "number" &&
+      question.pontos > 0 &&
+      (question.tipo === "objetiva"
+        ? Array.isArray(question.alternativas) &&
+          question.alternativas.length === 5 &&
+          question.alternativas.every(isNonEmptyString)
+        : question.alternativas === undefined ||
+          (Array.isArray(question.alternativas) && question.alternativas.length === 0)),
+    );
 }
 
 function validateConteudo(tipo: TipoMaterial, value: unknown): string[] {
@@ -86,20 +113,45 @@ function validateConteudo(tipo: TipoMaterial, value: unknown): string[] {
 
   if (
     typeof value.totalPontos !== "number" ||
+    !Number.isFinite(value.totalPontos) ||
+    value.totalPontos <= 0 ||
+    typeof value.tempoEstimadoMinutos !== "number" ||
+    !Number.isInteger(value.tempoEstimadoMinutos) ||
+    value.tempoEstimadoMinutos <= 0 ||
+    !stringArray(value.instrucoesAoEstudante) ||
     !isRecord(value.versoes) ||
     !isRecord(value.versoes.A) ||
     !isRecord(value.versoes.B) ||
     !isRecord(value.gabaritoComentado)
   ) {
-    return ["A prova precisa incluir duas versões e gabaritos comentados."];
+    return ["A prova precisa incluir duração, pontuação total, instruções ao estudante, duas versões e gabaritos comentados."];
   }
   const versionA = value.versoes.A.questoes;
   const versionB = value.versoes.B.questoes;
-  if (!listOfRecords(versionA, 5, 8) || !listOfRecords(versionB, 5, 8)) {
-    return ["Cada versão da prova precisa conter de cinco a oito questões."];
+  if (!validExamQuestions(versionA) || !validExamQuestions(versionB)) {
+    return ["Cada versão precisa ter de cinco a oito questões numeradas, com habilidade, nível, enunciado e pontuação válidos; objetivas precisam de cinco alternativas e abertas/problemas não devem ter alternativas."];
   }
-  const questionsA = versionA as unknown[];
-  const questionsB = versionB as unknown[];
+  const questionsA = versionA;
+  const questionsB = versionB;
+  if (questionsA.length !== questionsB.length) {
+    return ["As versões A e B precisam ter a mesma quantidade de questões."];
+  }
+  const versionsAreParallel = questionsA.every((question, index) => {
+    const parallelQuestion = questionsB[index];
+    return question.tipo === parallelQuestion.tipo &&
+      String(question.habilidade).trim().toLocaleLowerCase("pt-BR") === String(parallelQuestion.habilidade).trim().toLocaleLowerCase("pt-BR") &&
+      question.nivel === parallelQuestion.nivel &&
+      question.pontos === parallelQuestion.pontos;
+  });
+  if (!versionsAreParallel) {
+    return ["Cada questão das versões A e B precisa preservar tipo, habilidade, nível e pontuação."];
+  }
+  if (
+    !questionsA.some((question) => question.tipo === "objetiva") ||
+    !questionsA.some((question) => question.tipo === "aberta" || question.tipo === "problema")
+  ) {
+    return ["A prova precisa combinar questões objetivas com questões abertas ou problemas aplicados."];
+  }
   if (!questionsHaveValidPoints(questionsA, value.totalPontos) || !questionsHaveValidPoints(questionsB, value.totalPontos)) {
     return ["A soma dos pontos das questões das versões A e B precisa corresponder ao total da prova."];
   }
@@ -109,7 +161,9 @@ function validateConteudo(tipo: TipoMaterial, value: unknown): string[] {
     !Array.isArray(answerA) ||
     !Array.isArray(answerB) ||
     answerA.length !== questionsA.length ||
-    answerB.length !== questionsB.length
+    answerB.length !== questionsB.length ||
+    !answerA.every((answer, index) => isRecord(answer) && answer.numero === index + 1 && isNonEmptyString(answer.resposta)) ||
+    !answerB.every((answer, index) => isRecord(answer) && answer.numero === index + 1 && isNonEmptyString(answer.resposta))
   ) {
     return ["Inclua o gabarito comentado de cada questão das duas versões."];
   }

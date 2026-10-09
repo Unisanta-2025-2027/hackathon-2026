@@ -90,7 +90,7 @@ const formatos: Record<TipoMaterial, string> = {
   "reflexaoFinal": "pergunta breve de metacognição"
 }
 Inclua de 4 a 6 questões variadas, com ao menos uma aplicação autêntica e uma justificativa do raciocínio.`,
-  prova: `Elabore uma avaliação justa, alinhada aos objetivos e com critérios claros. Produza duas versões paralelas (A e B): mesma matriz de habilidades e níveis de dificuldade, mas enunciados/dados diferentes para reduzir cópia sem criar desigualdade. Inclua instruções ao estudante, pontuação fechando exatamente o total, gabarito comentado de ambas as versões e rubrica analítica para respostas abertas. Não use pegadinhas, pistas involuntárias ou conteúdo não ensinado. JSON:
+  prova: `Elabore uma prova completa, pronta para ser aplicada aos estudantes e alinhada aos tópicos, descrições, habilidades e documentos-base fornecidos. Produza duas versões paralelas (A e B), com a mesma quantidade e ordem de questões; em cada número, preserve exatamente tipo, habilidade, nível e pontuação, mudando os enunciados/dados sem alterar a dificuldade ou a resposta esperada. Combine questões objetivas com questões abertas ou problemas aplicados, conforme os conteúdos permitirem. Cada enunciado deve trazer todo o contexto e os dados necessários para o estudante resolver sem ajuda do professor. Em questões objetivas, escreva exatamente cinco alternativas plausíveis e mutuamente exclusivas, com apenas uma correta; o texto de cada alternativa não deve começar com seu rótulo (A, B, C, D ou E). Em questões abertas e problemas, diga precisamente o que deve ser respondido, calculado, explicado ou produzido; não deixe instruções para o professor completar a prova. Inclua instruções claras ao estudante, pontuação fechando exatamente o total, gabarito comentado separado para o professor e rubrica analítica coerente com os pontos das questões abertas. Não use pegadinhas, pistas involuntárias, itens ambíguos ou conteúdo não ensinado. A prova impressa mostrará somente título, versão, cabeçalho, instruções e questões; objetivo, pressupostos, matriz, acessibilidade, gabarito e rubrica são dados de referência do professor e não devem aparecer no caderno do estudante. JSON:
 {
   "titulo": "string",
   "objetivo": "string",
@@ -100,8 +100,8 @@ Inclua de 4 a 6 questões variadas, com ao menos uma aplicação autêntica e um
   "instrucoesAoEstudante": ["orientações claras, incluindo como justificar e revisar"],
   "matrizAvaliacao": [{"habilidade":"string","questoes":[1],"pesoPontos":2,"nivel":"inicial|intermediario|avancado"}],
   "versoes": {
-    "A": {"questoes":[{"numero":1,"tipo":"objetiva|aberta|problema","habilidade":"string","nivel":"inicial|intermediario|avancado","enunciado":"string","alternativas":[],"pontos":2}]},
-    "B": {"questoes":[{"numero":1,"tipo":"objetiva|aberta|problema","habilidade":"string","nivel":"inicial|intermediario|avancado","enunciado":"string","alternativas":[],"pontos":2}]}
+    "A": {"questoes":[{"numero":1,"tipo":"objetiva|aberta|problema","habilidade":"string","nivel":"inicial|intermediario|avancado","enunciado":"string completo para o estudante","alternativas":["A string","B string","C string","D string","E string"],"pontos":2}]},
+    "B": {"questoes":[{"numero":1,"tipo":"objetiva|aberta|problema","habilidade":"string","nivel":"inicial|intermediario|avancado","enunciado":"string completo com dados paralelos","alternativas":["A string","B string","C string","D string","E string"],"pontos":2}]}
   },
   "gabaritoComentado": {
     "A": [{"numero":1,"resposta":"string","justificativa":"raciocínio e critérios parciais"}],
@@ -110,7 +110,7 @@ Inclua de 4 a 6 questões variadas, com ao menos uma aplicação autêntica e um
   "rubrica": [{"criterio":"string","maximoPontos":2,"niveis":[{"nivel":"completo|parcial|inicial","descricao":"evidência observável","pontos":2}]}],
   "acessibilidade": ["ajustes de acesso que preservam o objetivo avaliado"]
 }
-Crie de 5 a 8 questões por versão, inclua itens objetivos e abertos/aplicados, e confira que soma dos pontos por versão e rubrica seja exatamente totalPontos.`,
+Crie de 5 a 8 questões por versão, inclua questões objetivas e abertas/aplicadas. Para questões abertas e problemas, use "alternativas": []. Confira a equivalência item a item das versões A/B e confirme que a soma dos pontos por versão e da rubrica seja exatamente totalPontos.`,
 };
 
 export function criarPromptPedagogico(tipo: TipoMaterial, contexto: ContextoPedagogico) {

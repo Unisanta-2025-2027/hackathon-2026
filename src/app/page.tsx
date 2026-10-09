@@ -60,6 +60,18 @@ import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useSta
 type Screen = "overview" | "studio" | "presets";
 type Artifact = "Roteiro" | "Atividade" | "Prova";
 type Progress = "Feito" | "Pendente" | "Não iniciado";
+type PrintableExam = {
+  totalPontos: number;
+  tempoEstimadoMinutos: number;
+  instrucoes: string[];
+  questoes: {
+    numero: number;
+    enunciado: string;
+    pontos: number;
+    alternativas: string[];
+    linhasResposta: number;
+  }[];
+};
 
 export default function Home() {
   const [screen, setScreen] = useState<Screen>("overview");
@@ -551,35 +563,22 @@ export default function Home() {
     }
     let contentForExport = generatedMaterial.conteudo;
     let title = generatedMaterial.titulo;
-    if (!includeTeacherNotes) {
+    let printableExam: PrintableExam | null = null;
+    if (generatedMaterial.tipo === "prova" && !includeTeacherNotes) {
+      printableExam = preparePrintableExam(generatedMaterial.conteudo, examExportVersion);
+      if (!printableExam) {
+        notify("A prova não contém todas as informações necessárias para montar uma versão pronta para impressão.");
+        return;
+      }
+      title = `${title} — Versão ${examExportVersion}`;
+      contentForExport = {};
+    } else if (!includeTeacherNotes) {
       const studentContent = { ...generatedMaterial.conteudo };
       delete studentContent.gabaritoComentado;
       delete studentContent.rubrica;
       contentForExport = studentContent;
-      if (generatedMaterial.tipo === "prova") {
-        const versions = generatedMaterial.conteudo.versoes;
-        const selectedVersion = versions && typeof versions === "object" && !Array.isArray(versions)
-          ? (versions as Record<string, unknown>)[examExportVersion]
-          : null;
-        const versionContent = selectedVersion && typeof selectedVersion === "object" && !Array.isArray(selectedVersion)
-          ? selectedVersion as Record<string, unknown>
-          : null;
-        if (!versionContent) {
-          notify(`A versão ${examExportVersion} da prova não está disponível.`);
-          return;
-        }
-        const examDetails = { ...studentContent };
-        delete examDetails.versoes;
-        delete examDetails.matrizAvaliacao;
-        contentForExport = {
-          ...examDetails,
-          versao: examExportVersion,
-          questoes: versionContent.questoes,
-        };
-        title = `${title} — Versão ${examExportVersion}`;
-      }
     }
-    const paragraphs = flattenMaterial(contentForExport);
+    const paragraphs = printableExam ? [] : flattenMaterial(contentForExport);
     const filename = title.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-").replaceAll(/^-|-$/g, "");
     const headerRows = generatedMaterial.tipo === "roteiro_aula" ? [] : [
       ["Instituição", generatedMaterial.cabecalho.instituicao || "________________________________"],
@@ -597,7 +596,9 @@ export default function Home() {
         notify("Permita pop-ups para abrir a visualização de impressão em PDF.");
         return;
       }
-      const body = paragraphs.map((paragraph) =>
+      const body = printableExam
+        ? renderPrintableExamHtml(printableExam)
+        : paragraphs.map((paragraph) =>
         paragraph.heading
           ? `<h2>${escapeHtml(paragraph.text)}</h2>`
           : `<p>${escapeHtml(paragraph.text)}</p>`,
@@ -605,19 +606,27 @@ export default function Home() {
       const header = headerRows.length ? `<header class="school-header">${headerRows.map(([label, value]) =>
         `<div class="header-field"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</div>`,
       ).join("")}</header>` : "";
-      printWindow.document.write(`<html lang="pt-BR"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font:14px Arial,sans-serif;color:#24242a;max-width:760px;margin:48px auto;line-height:1.55}.school-header{border:1px solid #777;padding:14px 16px;margin-bottom:22px}.header-field{min-height:23px}h1{font-size:23px;margin:20px 0 6px}h2{font-size:15px;margin-top:25px;color:#5146ac}p{margin:8px 0}.questions{columns:2;column-gap:28px}@media print{body{margin:20mm auto}}</style></head><body>${header}<h1>${escapeHtml(title)}</h1><div class="questions">${body}</div><script>window.onload=()=>window.print()</script></body></html>`);
+      const printStyles = printableExam
+        ? "body{font:11pt Arial,sans-serif;color:#24242a;max-width:180mm;margin:0 auto;line-height:1.45}.school-header{border:1px solid #777;padding:10px 14px;margin-bottom:18px}.header-field{min-height:22px}h1{font-size:18pt;margin:0 0 4px}.exam-meta{margin:0 0 16px;color:#444;font-size:10pt}.exam-instructions{margin:12px 0 20px}.exam-instructions h2{font-size:12pt;margin-bottom:6px}.exam-instructions li{margin:3px 0}.exam-question{margin:0 0 18px;break-inside:avoid}.question-heading{display:flex;justify-content:space-between;font-weight:bold;margin-bottom:4px}.exam-question p{margin:4px 0 8px;white-space:pre-wrap}.exam-choices{list-style:none;padding:0 0 0 8px;margin:6px 0}.exam-choices li{margin:5px 0}.answer-line{height:24px;border-bottom:1px solid #aaa}.answer-lines{margin-top:8px}"
+        : "body{font:14px Arial,sans-serif;color:#24242a;max-width:760px;margin:48px auto;line-height:1.55}.school-header{border:1px solid #777;padding:14px 16px;margin-bottom:22px}.header-field{min-height:23px}h1{font-size:23px;margin:20px 0 6px}h2{font-size:15px;margin-top:25px;color:#5146ac}p{margin:8px 0}.questions{columns:2;column-gap:28px}";
+      printWindow.document.write(`<html lang="pt-BR"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>${printStyles}@page{size:A4;margin:16mm 18mm}@media print{body{margin:0;max-width:none}}</style></head><body>${header}<h1>${escapeHtml(title)}</h1>${body}<script>window.onload=()=>window.print()</script></body></html>`);
       printWindow.document.close();
       notify("Visualização pronta. Escolha “Salvar como PDF” na janela de impressão.");
       return;
     }
 
     const xmlEscape = (value: string) => escapeHtml(value).replaceAll("&apos;", "&apos;");
+    const examDocumentParagraphs = printableExam ? renderPrintableExamDocx(printableExam) : [];
     const documentParagraphs = [
       ...headerRows.map(([label, value]) => `<w:p><w:r><w:rPr><w:b/></w:rPr><w:t>${xmlEscape(label)}: </w:t></w:r><w:r><w:t xml:space="preserve">${xmlEscape(value)}</w:t></w:r></w:p>`),
       ...(headerRows.length ? [`<w:p/>`] : []),
       `<w:p><w:pPr><w:pStyle w:val="Title"/></w:pPr><w:r><w:t>${xmlEscape(title)}</w:t></w:r></w:p>`,
-      ...paragraphs.map((paragraph) => `<w:p>${paragraph.heading ? `<w:pPr><w:pStyle w:val="Heading2"/></w:pPr>` : ""}<w:r><w:t xml:space="preserve">${xmlEscape(paragraph.text)}</w:t></w:r></w:p>`),
-      `<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720"/></w:sectPr>`,
+      ...(printableExam
+        ? examDocumentParagraphs
+        : paragraphs.map((paragraph) => `<w:p>${paragraph.heading ? `<w:pPr><w:pStyle w:val="Heading2"/></w:pPr>` : ""}<w:r><w:t xml:space="preserve">${xmlEscape(paragraph.text)}</w:t></w:r></w:p>`)),
+      printableExam
+        ? `<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="850" w:right="850" w:bottom="850" w:left="850"/></w:sectPr>`
+        : `<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720"/></w:sectPr>`,
     ].join("");
     const docxBytes = createZip([
       { name: "[Content_Types].xml", content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>` },
@@ -631,7 +640,7 @@ export default function Home() {
     anchor.download = `${filename}.docx`;
     anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    notify("Documento DOCX exportado.");
+    notify(printableExam ? "Prova pronta para impressão exportada em DOCX." : "Documento DOCX exportado.");
   }
 
   return (
@@ -971,7 +980,7 @@ export default function Home() {
           <div className="modal-topline"><span className="modal-icon"><CheckCircle2 size={18} /></span><button className="icon-button" aria-label="Fechar material" onClick={() => setGeneratedMaterial(null)}><X size={18} /></button></div>
           <span className="section-kicker">MATERIAL GERADO E SALVO</span>
           <h2 id="generated-title">{generatedMaterial.titulo}</h2>
-          {(generatedMaterial.tipo === "prova" || generatedMaterial.tipo === "atividade") && <p className="teacher-key-notice">Gabarito e critérios aparecem somente nesta prévia. A exportação padrão é a versão do estudante.</p>}
+          {(generatedMaterial.tipo === "prova" || generatedMaterial.tipo === "atividade") && <p className="teacher-key-notice">Gabarito e critérios aparecem somente nesta prévia e no arquivo do professor. A exportação para impressão contém apenas o material do estudante.</p>}
           {generatedMaterial.tipo === "prova" && <label className="exam-version-select">VERSÃO PARA EXPORTAR<select value={examExportVersion} onChange={(event) => setExamExportVersion(event.target.value as "A" | "B")}><option value="A">Versão A — estudante</option><option value="B">Versão B — estudante</option></select></label>}
           <div className="generated-preview">{Object.entries(generatedMaterial.conteudo).map(([key, value]) =>
             <GeneratedSection key={key} name={key} value={value} />,
@@ -979,8 +988,8 @@ export default function Home() {
           <div className="modal-footer">
             <button className="button button-quiet" onClick={() => setGeneratedMaterial(null)}>Fechar</button>
             {(generatedMaterial.tipo === "prova" || generatedMaterial.tipo === "atividade") && <button className="button button-outline" onClick={() => exportDocument("DOCX", true)}><FileCheck2 size={15} /> DOCX professor</button>}
-            <button className="button button-outline" onClick={() => exportDocument("DOCX")}><FileCheck2 size={15} /> DOCX aluno</button>
-            <button className="button button-primary" onClick={() => exportDocument("PDF")}><FileText size={15} /> PDF aluno</button>
+            <button className="button button-outline" onClick={() => exportDocument("DOCX")}><FileCheck2 size={15} /> {generatedMaterial.tipo === "prova" ? "Prova para impressão (DOCX)" : "DOCX aluno"}</button>
+            <button className="button button-primary" onClick={() => exportDocument("PDF")}><FileText size={15} /> {generatedMaterial.tipo === "prova" ? "Prova para impressão (PDF)" : "PDF aluno"}</button>
           </div>
         </section>
       </div>}
@@ -1055,6 +1064,120 @@ function StatusPill({ status }: { status: Progress }) {
 
 function escapeHtml(value: string) {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function preparePrintableExam(content: Record<string, unknown>, version: "A" | "B"): PrintableExam | null {
+  const versions = content.versoes;
+  const selectedVersion = isRecord(versions) ? versions[version] : null;
+  const instructions = content.instrucoesAoEstudante;
+  const questions = isRecord(selectedVersion) ? selectedVersion.questoes : null;
+  if (
+    typeof content.totalPontos !== "number" ||
+    !Number.isFinite(content.totalPontos) ||
+    content.totalPontos <= 0 ||
+    typeof content.tempoEstimadoMinutos !== "number" ||
+    !Number.isInteger(content.tempoEstimadoMinutos) ||
+    content.tempoEstimadoMinutos <= 0 ||
+    !Array.isArray(instructions) ||
+    !instructions.length ||
+    !instructions.every((instruction) => typeof instruction === "string" && instruction.trim()) ||
+    !Array.isArray(questions) ||
+    questions.length < 5 ||
+    questions.length > 8
+  ) {
+    return null;
+  }
+  const printableQuestions: PrintableExam["questoes"] = [];
+  for (const [index, item] of questions.entries()) {
+    if (
+      !isRecord(item) ||
+      item.numero !== index + 1 ||
+      !["objetiva", "aberta", "problema"].includes(String(item.tipo)) ||
+      typeof item.enunciado !== "string" ||
+      !item.enunciado.trim() ||
+      typeof item.pontos !== "number" ||
+      !Number.isFinite(item.pontos) ||
+      item.pontos <= 0
+    ) {
+      return null;
+    }
+    const alternatives = item.alternativas;
+    if (item.tipo === "objetiva") {
+      if (
+        !Array.isArray(alternatives) ||
+        alternatives.length !== 5 ||
+        !alternatives.every((alternative) => typeof alternative === "string" && alternative.trim())
+      ) {
+        return null;
+      }
+    } else if (alternatives !== undefined && (!Array.isArray(alternatives) || alternatives.length > 0)) {
+      return null;
+    }
+    printableQuestions.push({
+      numero: index + 1,
+      enunciado: item.enunciado,
+      pontos: item.pontos,
+      alternativas: Array.isArray(alternatives) ? alternatives : [],
+      linhasResposta: item.tipo === "aberta" ? 6 : item.tipo === "problema" ? 10 : 0,
+    });
+  }
+  const questionPoints = printableQuestions.reduce((total, question) => total + question.pontos, 0);
+  if (Math.abs(questionPoints - content.totalPontos) >= 0.01) return null;
+  return {
+    totalPontos: content.totalPontos,
+    tempoEstimadoMinutos: content.tempoEstimadoMinutos,
+    instrucoes: instructions,
+    questoes: printableQuestions,
+  };
+}
+
+function renderPrintableExamHtml(exam: PrintableExam) {
+  const totalPoints = formatExamPoints(exam.totalPontos);
+  const instructions = `<section class="exam-instructions"><h2>Instruções</h2><ol>${exam.instrucoes.map((instruction) => `<li>${escapeHtml(instruction)}</li>`).join("")}</ol></section>`;
+  const questions = exam.questoes.map((question) => {
+    const alternatives = question.alternativas.length
+      ? `<ul class="exam-choices">${question.alternativas.map((alternative, index) => `<li>( &nbsp; ) ${String.fromCharCode(65 + index)}) ${escapeHtml(alternative)}</li>`).join("")}</ul>`
+      : "";
+    const answerLines = question.linhasResposta
+      ? `<div class="answer-lines">${Array.from({ length: question.linhasResposta }, () => "<div class=\"answer-line\"></div>").join("")}</div>`
+      : "";
+    return `<section class="exam-question"><div class="question-heading"><strong>Questão ${question.numero}</strong><span>${formatExamPoints(question.pontos)} ${question.pontos === 1 ? "ponto" : "pontos"}</span></div><p>${escapeHtml(question.enunciado).replaceAll("\n", "<br>")}</p>${alternatives}${answerLines}</section>`;
+  }).join("");
+  return `<p class="exam-meta">Valor total: ${totalPoints} ${exam.totalPontos === 1 ? "ponto" : "pontos"} · Tempo estimado: ${exam.tempoEstimadoMinutos} minutos</p>${instructions}${questions}`;
+}
+
+function formatExamPoints(points: number) {
+  return new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 2 }).format(points);
+}
+
+function renderPrintableExamDocx(exam: PrintableExam) {
+  const textParagraph = (text: string, options = "") => {
+    const runs = text.split(/\r?\n/).map((line, index) =>
+      `${index ? "<w:r><w:br/></w:r>" : ""}<w:r><w:t xml:space="preserve">${escapeHtml(line || " ")}</w:t></w:r>`,
+    ).join("");
+    return `<w:p>${options}${runs}</w:p>`;
+  };
+  const answerLine = `<w:p><w:pPr><w:spacing w:after="220"/><w:pBdr><w:bottom w:val="single" w:sz="4" w:space="1" w:color="AAAAAA"/></w:pBdr></w:pPr><w:r><w:t xml:space="preserve"> </w:t></w:r></w:p>`;
+  return [
+    textParagraph(`Valor total: ${formatExamPoints(exam.totalPontos)} ${exam.totalPontos === 1 ? "ponto" : "pontos"} · Tempo estimado: ${exam.tempoEstimadoMinutos} minutos`),
+    textParagraph("Instruções", `<w:pPr><w:pStyle w:val="Heading2"/><w:keepNext/></w:pPr>`),
+    ...exam.instrucoes.map((instruction, index) => textParagraph(`${index + 1}. ${instruction}`)),
+    ...exam.questoes.flatMap((question) => [
+      textParagraph(
+        `Questão ${question.numero} (${formatExamPoints(question.pontos)} ${question.pontos === 1 ? "ponto" : "pontos"})`,
+        `<w:pPr><w:pStyle w:val="Heading2"/><w:keepNext/></w:pPr>`,
+      ),
+      textParagraph(question.enunciado, `<w:pPr><w:keepNext/></w:pPr>`),
+      ...question.alternativas.map((alternative, index) =>
+        textParagraph(`(   ) ${String.fromCharCode(65 + index)}) ${alternative}`),
+      ),
+      ...Array.from({ length: question.linhasResposta }, () => answerLine),
+    ]),
+  ];
 }
 
 function fieldLabel(value: string) {
