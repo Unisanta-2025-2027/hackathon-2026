@@ -74,6 +74,7 @@ export type Database = {
       pre_promptos: Table<{
         id: string;
         professor_id: string;
+        materia_id: string | null;
         nome: string;
         descricao: string | null;
         nome_escola: string | null;

@@ -5,9 +5,7 @@ export type ContextoPedagogico = {
   instituicao: string;
   materia: string;
   turma: string;
-  topico: string;
-  descricaoTopico: string;
-  habilidades: string[];
+  topicos: { titulo: string; descricao: string; habilidades: string[] }[];
   ementa: string;
   trechoDocumento: string;
   documentoPdfAnexado: boolean;
@@ -18,7 +16,7 @@ export type ContextoPedagogico = {
 const orientacaoComum = `Planeje como uma professora ou um professor com décadas de experiência real em sala de aula, domínio de didática, avaliação e tecnologias educacionais. Escreva em português brasileiro claro, acolhedor, preciso e adequado para uso imediato.
 
 Princípios obrigatórios:
-- Alinhe cada objetivo, etapa, exercício e critério ao tópico, à descrição, às habilidades e à ementa fornecidos. Não invente conteúdos como se estivessem no documento.
+- Alinhe cada objetivo, etapa, exercício e critério aos tópicos selecionados, suas descrições, habilidades e ementas fornecidas. Considere todos os tópicos em um único material coerente, sem omitir nenhum nem inventar conteúdos como se estivessem nos documentos.
 - Priorize aprendizagem ativa: recuperar conhecimentos prévios, explicitar propósito, modelar o raciocínio, praticar com apoio, praticar com autonomia e fechar com síntese/reflexão.
 - Torne objetivos observáveis e avaliáveis; proponha perguntas que revelem compreensão, não apenas participação.
 - Antecipe erros conceituais plausíveis e use-os para ensinar, sem ridicularizar estudantes.
@@ -36,11 +34,10 @@ Professor(a): ${contexto.professor || "não informado"}
 Instituição: ${contexto.instituicao || "não informada"}
 Matéria: ${contexto.materia}
 Turma: ${contexto.turma || "não informada"}
-Tópico selecionado: ${contexto.topico}
-Descrição do tópico: ${contexto.descricaoTopico || "não informada"}
-Habilidades: ${contexto.habilidades.length ? contexto.habilidades.join("; ") : "não informadas"}
+Tópicos selecionados:
+${contexto.topicos.map((topico, index) => `${index + 1}. ${topico.titulo}\nDescrição: ${topico.descricao || "não informada"}\nHabilidades: ${topico.habilidades.length ? topico.habilidades.join("; ") : "não informadas"}`).join("\n")}
 Ementa/documento-base: ${contexto.ementa}
-Trecho extraído do documento: ${contexto.trechoDocumento || (contexto.documentoPdfAnexado ? "o PDF original está anexado e deve ser consultado como fonte" : "não disponível; baseie-se somente no tópico, descrição e habilidades acima")}
+Trecho extraído dos documentos: ${contexto.trechoDocumento || (contexto.documentoPdfAnexado ? "os PDFs originais estão anexados e devem ser consultados como fonte" : "não disponível; baseie-se somente nos tópicos, descrições e habilidades acima")}
 Instruções pedagógicas do professor: ${contexto.instrucoesProfessor || "nenhuma preferência adicional"}
 Layout preferido: ${contexto.layout}`;
 }

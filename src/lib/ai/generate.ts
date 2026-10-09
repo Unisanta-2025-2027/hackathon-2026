@@ -139,7 +139,7 @@ function parseConteudo(text: string): unknown {
 export async function gerarConteudoPedagogico(
   tipo: TipoMaterial,
   contexto: ContextoPedagogico,
-  documentoPdf?: DocumentoPdf,
+  documentoPdf?: DocumentoPdf | DocumentoPdf[],
 ): Promise<{ conteudo: ConteudoGerado; modelo: string; uso: Record<string, number> }> {
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
   if (!apiKey) throw new Error("IA_KEY_MISSING");
@@ -150,12 +150,19 @@ export async function gerarConteudoPedagogico(
     httpOptions: { retryOptions: { attempts: 1 } },
   });
   const prompt = criarPromptPedagogico(tipo, contexto);
+  const documentosPdf = documentoPdf
+    ? Array.isArray(documentoPdf) ? documentoPdf : [documentoPdf]
+    : [];
   const gerarInteracao = (model: string, userPrompt: string) => ai.interactions.create({
     model,
-    input: documentoPdf
+    input: documentosPdf.length
       ? [
           { type: "text" as const, text: userPrompt },
-          { type: "document" as const, data: documentoPdf.data, mime_type: documentoPdf.mimeType },
+          ...documentosPdf.map((documento) => ({
+            type: "document" as const,
+            data: documento.data,
+            mime_type: documento.mimeType,
+          })),
         ]
       : userPrompt,
     system_instruction: prompt.systemInstruction,

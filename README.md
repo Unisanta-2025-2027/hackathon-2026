@@ -21,7 +21,7 @@ O acesso ao Supabase é feito por Server Actions com sessão em cookies HTTP-onl
 
 ## Banco de dados Supabase
 
-A estrutura inicial está em `supabase/migrations/20261007230000_initial_schema.sql`. Os nomes de entidades, campos, tipos, políticas e funções criados pelo projeto estão em português:
+A estrutura inicial está em `supabase/migrations/20261007230000_initial_schema.sql`; os cabeçalhos de pré-prompto vinculados a uma matéria são adicionados por `supabase/migrations/20261008230000_subject_header_presets.sql`. Os nomes de entidades, campos, tipos, políticas e funções criados pelo projeto estão em português:
 
 - `professores`, `materias` e `turmas` para a gestão acadêmica;
 - `ementas` e `topicos_ementa` para documentos-base, extração e acompanhamento do conteúdo;
@@ -56,4 +56,4 @@ npx supabase start
 npx supabase migration up
 ```
 
-O perfil do professor é criado automaticamente a partir do Supabase Auth. Cadastro, login, matérias, turmas, upload e exclusão de ementas, extração automática, edição e exclusão de tópicos, pré-promptos e geração de roteiros, atividades e provas usam o banco. As gerações são validadas antes de salvar; provas incluem versões A/B, gabarito comentado e rubrica. A leitura automática de respostas manuscritas e correção por IA ainda não estão implementadas.
+O perfil do professor é criado automaticamente a partir do Supabase Auth. Ao ler uma ementa, a IA também identifica matéria e instituição quando esses dados aparecem explicitamente; o sistema cria um cabeçalho fixo vinculado à matéria e permite manter padrões separados para cada escola. Os cabeçalhos são incluídos nas exportações PDF/DOCX, com nome do aluno, turma e data em branco para preenchimento manual. A geração aceita selecionar vários tópicos da matéria para compor um único material. Pré-promptos e cabeçalhos podem ser editados e excluídos. Cadastro, login, matérias, turmas, upload e exclusão de ementas, extração automática, edição e exclusão de tópicos, pré-promptos e geração de roteiros, atividades e provas usam o banco. As gerações são validadas antes de salvar; provas incluem versões A/B, gabarito comentado e rubrica. A leitura automática de respostas manuscritas e correção por IA ainda não estão implementadas.

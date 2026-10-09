@@ -192,6 +192,16 @@ h1 { display: flex; align-items: center; gap: 12px; margin-bottom: 9px; color: #
 .form-label { position: relative; display: block; color: #9295a0; font-size: 8px; font-weight: 750; letter-spacing: .7px; }
 .form-label select { display: block; width: 100%; height: 37px; appearance: none; margin-top: 7px; padding: 0 29px 0 10px; border: 1px solid #e8e8ed; border-radius: 6px; outline: 0; color: #555862; background: #fff; font-size: 10px; font-weight: 500; letter-spacing: 0; cursor: pointer; }
 .form-label > svg { position: absolute; right: 10px; bottom: 11px; color: #8e929b; pointer-events: none; }
+.studio-topic-layout { display: grid; grid-template-columns: 1.4fr 1fr; align-items: start; gap: 12px; margin-top: 18px; }
+.topic-selection { min-width: 0; padding: 0; margin: 0; border: 0; color: #9295a0; font-size: 8px; font-weight: 750; letter-spacing: .7px; }
+.topic-selection legend { margin-bottom: 7px; }
+.topic-selection-list { display: grid; gap: 1px; max-height: 155px; overflow-y: auto; padding: 4px; border: 1px solid #e8e8ed; border-radius: 6px; background: #fff; }
+.topic-selection-option { display: flex; align-items: center; gap: 8px; min-height: 29px; padding: 4px 6px; border-radius: 4px; color: #555862; font-size: 10px; font-weight: 500; letter-spacing: 0; cursor: pointer; }
+.topic-selection-option:hover { background: #f8f7ff; }
+.topic-selection-option input { width: 14px; height: 14px; flex: 0 0 auto; margin: 0; accent-color: var(--violet); }
+.topic-selection-option span { overflow-wrap: anywhere; }
+.topic-selection-count { display: block; margin-top: 6px; color: #9295a0; font-size: 8px; font-weight: 500; letter-spacing: 0; }
+.generator-modal .topic-selection { margin-bottom: 14px; }
 .presets-applied { display: flex; align-items: center; gap: 9px; margin-top: 14px; padding: 10px; border: 1px solid #eeedf7; border-radius: 7px; background: #fbfaff; }
 .applied-icon { display: grid; place-items: center; width: 27px; height: 27px; border-radius: 6px; color: var(--violet); background: #f0eeff; }
 .presets-applied > span:nth-child(2) { min-width: 0; flex: 1; }
@@ -253,11 +263,18 @@ h1 { display: flex; align-items: center; gap: 12px; margin-bottom: 9px; color: #
 .preset-intro p { margin: 0; color: #89869d; font-size: 10px; }
 .intro-decoration { position: absolute; right: 27px; color: #dedaff; }
 .preset-list { display: flex; flex-direction: column; gap: 9px; }
-.preset-card { display: flex; align-items: center; gap: 13px; min-height: 99px; padding: 16px; border: 1px solid #e8e8ed; border-radius: 9px; background: white; }
+.preset-card { display: block; padding: 16px; border: 1px solid #e8e8ed; border-radius: 9px; background: white; }
+.preset-card-heading { display: flex; align-items: center; gap: 13px; min-height: 62px; }
 .preset-card-icon { width: 36px; height: 36px; display: grid; place-items: center; flex: 0 0 auto; border: 1px solid #edebfa; border-radius: 9px; color: #7770c9; background: #f7f6ff; }
 .preset-card-copy { min-width: 0; flex: 1; }
 .preset-card-copy h3 { margin: 0 0 5px; color: #42444c; font-size: 11px; font-weight: 650; }
 .preset-card-copy p { margin: 0 0 7px; color: #888c96; font-size: 9px; }
+.preset-edit-form { display: grid; gap: 10px; padding-top: 13px; margin-top: 13px; border-top: 1px solid #f0f0f2; }
+.preset-edit-form label { display: grid; gap: 5px; color: #777b85; font-size: 9px; font-weight: 650; }
+.preset-edit-form input, .preset-edit-form textarea { width: 100%; padding: 9px 10px; border: 1px solid #e6e5eb; border-radius: 6px; color: #50535c; background: #fff; font: inherit; font-size: 10px; resize: vertical; }
+.preset-edit-actions { display: flex; justify-content: space-between; gap: 8px; }
+.button-danger-outline { color: #a43a46; border-color: #f0cbd0; background: #fff; }
+.button-danger-outline:hover { border-color: #dca3aa; background: #fff8f8; }
 .preset-tag { color: #a0a2aa; font-size: 7px; font-weight: 650; letter-spacing: .55px; }
 .toggle { width: 35px; height: 20px; flex: 0 0 auto; position: relative; padding: 0; border: 0; border-radius: 12px; background: #dfe1e5; cursor: pointer; transition: .16s; }
 .toggle span { position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: white; box-shadow: 0 1px 3px #0002; transition: .16s; }
@@ -272,6 +289,26 @@ h1 { display: flex; align-items: center; gap: 12px; margin-bottom: 9px; color: #
 .add-preset-form .button { min-height: 36px; font-size: 10px; }
 .preset-footnote { display: flex; align-items: center; gap: 7px; margin-top: 13px; color: #9996b2; font-size: 9px; }
 .preset-footnote svg { color: #8a81dc; }
+.header-presets { margin-top: 28px; }
+.header-presets-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; margin-bottom: 8px; }
+.header-presets-heading h2 { margin: 6px 0 0; font-size: 18px; }
+.header-subject-name { color: #76728f; font-size: 10px; font-weight: 650; }
+.header-preset-list { margin-top: 15px; }
+.header-preset-card { padding: 16px; border: 1px solid #e8e8ed; border-radius: 9px; background: #fff; }
+.header-preset-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.header-preset-title h3, .add-header-card h3 { margin: 0 0 5px; color: #42444c; font-size: 11px; font-weight: 650; }
+.header-preset-title p, .add-header-card p { margin: 0; color: #888c96; font-size: 9px; }
+.header-preset-actions { display: flex; align-items: center; gap: 11px; }
+.header-edit-form { display: grid; gap: 12px; margin-top: 14px; }
+.header-edit-form label, .header-create-fields label { display: grid; gap: 6px; color: #777b85; font-size: 9px; font-weight: 650; }
+.header-edit-form input, .header-create-fields input { min-width: 0; height: 36px; padding: 0 10px; border: 1px solid #e6e5eb; border-radius: 6px; color: #50535c; background: #fff; font-size: 10px; }
+.header-edit-form .form-row { margin-top: 0; }
+.header-fields-preview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 12px; padding: 12px; border: 1px solid #efedf7; border-radius: 7px; background: #fbfaff; color: #747784; font-size: 9px; }
+.header-fields-preview strong { grid-column: 1 / -1; color: #4d4b60; }
+.header-empty-state { display: block; padding: 18px; }
+.add-header-card { padding: 16px; margin-top: 13px; border: 1px dashed #d9d6e9; border-radius: 9px; background: #fdfcff; }
+.header-create-fields { display: grid; grid-template-columns: 1.1fr 1fr 1fr auto; align-items: end; gap: 9px; margin-top: 13px; }
+.add-header-card > p { margin-top: 11px; line-height: 1.5; }
 
 /* Generator modal and feedback */
 .modal-backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 20px; background: #20202b75; backdrop-filter: blur(3px); }
@@ -367,6 +404,7 @@ h1 { display: flex; align-items: center; gap: 12px; margin-bottom: 9px; color: #
   .topic-table th:last-child, .topic-table td:last-child { padding-right: 13px; }
   .table-footer { padding-inline: 13px; }
   .studio-layout { grid-template-columns: 1fr; }
+  .studio-topic-layout { grid-template-columns: 1fr; }
   .studio-aside { display: grid; grid-template-columns: minmax(0,1fr) minmax(140px,.7fr); align-items: start; }
   .studio-step { gap: 5px; }
   .studio-step i { width: 8px; }
@@ -374,6 +412,9 @@ h1 { display: flex; align-items: center; gap: 12px; margin-bottom: 9px; color: #
   .studio-page .page-heading { gap: 13px; }
   .studio-step { align-self: flex-start; }
   .preset-card { min-height: 88px; padding: 12px; gap: 10px; }
+  .preset-card-heading { gap: 10px; }
+  .header-create-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .header-fields-preview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .preset-intro { padding: 14px; }
   .intro-decoration { right: 12px; opacity: .55; }
   .add-preset-card { align-items: stretch; flex-direction: column; gap: 12px; }
@@ -408,6 +449,7 @@ h1 { display: flex; align-items: center; gap: 12px; margin-bottom: 9px; color: #
   .add-preset-form { flex-direction: column; }
   .add-preset-form input { width: 100%; flex: initial; }
   .add-preset-form .button { width: 100%; }
+  .header-create-fields, .header-fields-preview { grid-template-columns: 1fr; }
 }
 @media print {
   body, .app-shell, .workspace, .content { background: #fff !important; }
