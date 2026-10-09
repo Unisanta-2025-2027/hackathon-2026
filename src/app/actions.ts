@@ -2,6 +2,9 @@
 
 import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { gerarConteudoPedagogico } from "@/lib/ai/generate";
+import type { TipoMaterial } from "@/lib/ai/prompts";
+import mammoth from "mammoth";
 
 export type ActionResult<T = undefined> =
   | { data: T; error: null }
@@ -40,6 +43,13 @@ export type TemplateRecord = {
   descricao: string | null;
   ativo: boolean;
   tipos_artefato: ("roteiro_aula" | "atividade" | "prova")[];
+  nome_escola: string | null;
+  nome_professor: string | null;
+  instrucoes_fixas: string | null;
+  colunas_layout: number;
+  layout_compacto: boolean;
+  familia_fonte: string;
+  tamanho_fonte: number;
 };
 export type AppData = {
   professor: { id: string; nome_completo: string };
@@ -80,7 +90,7 @@ export async function carregarDados(): Promise<ActionResult<AppData | null>> {
     supabase.from("turmas").select("id,materia_id,nome,turno,semestre,ano_letivo").order("nome"),
     supabase.from("ementas").select("id,materia_id,titulo,nome_arquivo,criado_em").order("criado_em", { ascending: false }),
     supabase.from("topicos_ementa").select("id,ementa_id,materia_id,titulo,descricao,situacao,ordem").order("ordem"),
-    supabase.from("pre_promptos").select("id,nome,descricao,ativo,tipos_artefato").order("criado_em"),
+    supabase.from("pre_promptos").select("id,nome,descricao,ativo,tipos_artefato,nome_escola,nome_professor,instrucoes_fixas,colunas_layout,layout_compacto,familia_fonte,tamanho_fonte").order("criado_em"),
     supabase.from("artefatos").select("id,titulo,tipo,situacao"),
     supabase.from("artefatos_topicos").select("artefato_id,topico_id"),
   ]);
@@ -381,7 +391,7 @@ export async function criarPrePrompto(input: { nome: string }): Promise<ActionRe
       nome: input.nome.trim(),
       tipos_artefato: ["roteiro_aula", "atividade", "prova"],
     })
-    .select("id,nome,descricao,ativo,tipos_artefato")
+    .select("id,nome,descricao,ativo,tipos_artefato,nome_escola,nome_professor,instrucoes_fixas,colunas_layout,layout_compacto,familia_fonte,tamanho_fonte")
     .single();
   if (error) return { data: null, error: errorMessage(error) };
   revalidatePath("/");
@@ -403,41 +413,228 @@ export async function alterarPrePrompto(input: { id: string; ativo: boolean }): 
   return { data: undefined, error: null };
 }
 
-export async function criarArtefato(input: {
+export type MaterialGerado = {
+  id: string;
+  titulo: string;
+  tipo: TipoMaterial;
+  conteudo: Record<string, unknown>;
+};
+
+function textoDoMaterial(value: unknown, heading = ""): string {
+  if (Array.isArray(value)) {
+    return value.map((item, index) => textoDoMaterial(item, `${heading}${heading ? " " : ""}${index + 1}`)).join("\n\n");
+  }
+  if (value && typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([key, item]) => textoDoMaterial(item, key.replaceAll(/([A-Z])/g, " $1")))
+      .join("\n\n");
+  }
+  const content = typeof value === "string" ? value : value == null ? "" : String(value);
+  return heading ? `${heading.charAt(0).toUpperCase()}${heading.slice(1)}\n${content}` : content;
+}
+
+export async function gerarMaterialComIA(input: {
   materiaId: string;
   turmaId: string | null;
-  ementaId: string;
   topicoId: string;
   prePromptoId: string | null;
-  snapshotPrePrompto: Record<string, string>;
-  tipo: "roteiro_aula" | "atividade" | "prova";
-  titulo: string;
-  conteudo: Record<string, string>;
-}): Promise<ActionResult> {
+  tipo: TipoMaterial;
+}): Promise<ActionResult<MaterialGerado>> {
   if (
     !isNonEmptyString(input?.materiaId) ||
-    !isNonEmptyString(input.ementaId) ||
     !isNonEmptyString(input.topicoId) ||
-    !isNonEmptyString(input.titulo) ||
     !["roteiro_aula", "atividade", "prova"].includes(input.tipo)
   ) {
-    return { data: null, error: "Complete os dados do material antes de salvar." };
+    return { data: null, error: "Selecione a matéria, o tópico e o tipo de material." };
   }
   const { supabase, user } = await usuarioAutenticado();
+
+  const { data: topic, error: topicError } = await supabase
+    .from("topicos_ementa")
+    .select("id,materia_id,ementa_id,titulo,descricao,habilidades")
+    .eq("id", input.topicoId)
+    .eq("materia_id", input.materiaId)
+    .eq("professor_id", user.id)
+    .single();
+  if (topicError) return { data: null, error: errorMessage(topicError) };
+
+  const [subjectResult, syllabusResult, profileResult] = await Promise.all([
+    supabase.from("materias").select("id,nome,ano_letivo").eq("id", topic.materia_id).eq("professor_id", user.id).single(),
+    supabase.from("ementas").select("id,titulo,texto_extraido,periodo,caminho_arquivo,tipo_mime,nome_arquivo").eq("id", topic.ementa_id).eq("professor_id", user.id).single(),
+    supabase.from("professores").select("nome_completo,nome_instituicao").eq("id", user.id).single(),
+  ]);
+  const contextError = subjectResult.error ?? syllabusResult.error ?? profileResult.error;
+  if (contextError) return { data: null, error: errorMessage(contextError) };
+  if (!subjectResult.data || !syllabusResult.data || !profileResult.data) {
+    return { data: null, error: "Não foi possível montar o contexto completo para a geração." };
+  }
+  const subject = subjectResult.data;
+  const syllabus = syllabusResult.data;
+  const profile = profileResult.data;
+
+  let trechoDocumento = syllabus.texto_extraido?.slice(0, 16000) ?? "";
+  let documentoPdf: { mimeType: "application/pdf"; data: string } | undefined;
+  if (!trechoDocumento && syllabus.caminho_arquivo) {
+    const { data: sourceFile, error } = await supabase.storage
+      .from("documentos-base")
+      .download(syllabus.caminho_arquivo);
+    if (error) return { data: null, error: `Não foi possível ler o documento-base: ${error.message}` };
+    if (sourceFile.size > 20 * 1024 * 1024) {
+      return { data: null, error: "Para usar o documento como contexto da IA, o arquivo deve ter no máximo 20 MB." };
+    }
+
+    const sourceBytes = Buffer.from(await sourceFile.arrayBuffer());
+    if (syllabus.tipo_mime === "application/pdf") {
+      if (sourceBytes.subarray(0, 5).toString("ascii") !== "%PDF-") {
+        return { data: null, error: "O arquivo armazenado não parece ser um PDF válido." };
+      }
+      documentoPdf = { mimeType: "application/pdf", data: sourceBytes.toString("base64") };
+    } else if (syllabus.tipo_mime === "text/plain") {
+      trechoDocumento = new TextDecoder().decode(sourceBytes).slice(0, 16000);
+    } else if (syllabus.tipo_mime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+      try {
+        const extracted = await mammoth.extractRawText({ buffer: sourceBytes });
+        trechoDocumento = extracted.value.slice(0, 16000);
+      } catch {
+        return { data: null, error: "Não foi possível extrair o texto do DOCX. Verifique se o arquivo está íntegro." };
+      }
+      if (!trechoDocumento.trim()) {
+        return { data: null, error: "O DOCX não contém texto legível para usar como referência da IA." };
+      }
+    } else if (syllabus.tipo_mime === "application/msword") {
+      return { data: null, error: "Para usar o documento na geração por IA, salve o arquivo DOC como DOCX ou PDF." };
+    }
+  }
+
+  let classroomName = "";
+  if (input.turmaId) {
+    const { data: classroom, error } = await supabase
+      .from("turmas")
+      .select("id,nome,semestre,ano_letivo,turno")
+      .eq("id", input.turmaId)
+      .eq("materia_id", topic.materia_id)
+      .eq("professor_id", user.id)
+      .single();
+    if (error) return { data: null, error: errorMessage(error) };
+    classroomName = [classroom.nome, classroom.semestre ? `${classroom.semestre}º semestre` : null, classroom.turno, classroom.ano_letivo]
+      .filter(Boolean)
+      .join(" · ");
+  }
+
+  let preset: {
+    id: string;
+    nome: string;
+    descricao: string | null;
+    nome_escola: string | null;
+    nome_professor: string | null;
+    instrucoes_fixas: string | null;
+    colunas_layout: number;
+    layout_compacto: boolean;
+    familia_fonte: string;
+    tamanho_fonte: number;
+  } | null = null;
+  if (input.prePromptoId) {
+    const { data, error } = await supabase
+      .from("pre_promptos")
+      .select("id,nome,descricao,nome_escola,nome_professor,instrucoes_fixas,colunas_layout,layout_compacto,familia_fonte,tamanho_fonte,ativo,tipos_artefato")
+      .eq("id", input.prePromptoId)
+      .eq("professor_id", user.id)
+      .single();
+    if (error) return { data: null, error: errorMessage(error) };
+    if (!data.ativo || !data.tipos_artefato.includes(input.tipo)) {
+      return { data: null, error: "O pré-prompto escolhido está inativo ou não se aplica a este material." };
+    }
+    preset = data;
+  }
+
+  let resultado: Awaited<ReturnType<typeof gerarConteudoPedagogico>>;
+  try {
+    resultado = await gerarConteudoPedagogico(input.tipo, {
+      professor: preset?.nome_professor || profile.nome_completo,
+      instituicao: preset?.nome_escola || profile.nome_instituicao || "",
+      materia: `${subject.nome} (${subject.ano_letivo})`,
+      turma: classroomName,
+      topico: topic.titulo,
+      descricaoTopico: topic.descricao ?? "",
+      habilidades: Array.isArray(topic.habilidades)
+        ? topic.habilidades.filter((item): item is string => typeof item === "string")
+        : [],
+      ementa: [syllabus.titulo, syllabus.periodo].filter(Boolean).join(" · "),
+      trechoDocumento,
+      documentoPdfAnexado: Boolean(documentoPdf),
+      instrucoesProfessor: preset?.instrucoes_fixas ?? "",
+      layout: preset
+        ? `${preset.colunas_layout} coluna(s), ${preset.layout_compacto ? "compacto" : "padrão"}, fonte ${preset.familia_fonte} ${preset.tamanho_fonte}pt`
+        : "padrão legível, adequado para impressão escolar",
+    }, documentoPdf);
+  } catch (error) {
+    if (error instanceof Error && error.message === "IA_KEY_MISSING") {
+      return { data: null, error: "A IA ainda não foi configurada. Adicione GEMINI_API_KEY às variáveis de ambiente do servidor e reinicie o app." };
+    }
+    if (error instanceof Error && error.message === "IA_AUTH_FAILED") {
+      return { data: null, error: "O Gemini recusou a chave de API. Confira GEMINI_API_KEY no ambiente do servidor e reinicie o app." };
+    }
+    if (error instanceof Error && error.message === "IA_QUOTA_EXCEEDED") {
+      return { data: null, error: "A cota do Gemini foi excedida ou o faturamento não está habilitado. Confira o uso e os limites no Google AI Studio." };
+    }
+    if (error instanceof Error && error.message === "IA_MODEL_NOT_FOUND") {
+      return { data: null, error: "Nenhum dos modelos de geração configurados foi encontrado na API de interações do Gemini. Confira GEMINI_MODEL no ambiente do servidor." };
+    }
+    if (error instanceof Error && error.message === "IA_BAD_REQUEST") {
+      return { data: null, error: "O Gemini rejeitou a solicitação. Verifique se o modelo aceita JSON estruturado e PDFs, e se o documento não é grande demais." };
+    }
+    if (error instanceof Error && error.message === "IA_PROVIDER_UNAVAILABLE") {
+      return { data: null, error: "Os modelos Gemini estão temporariamente indisponíveis. O sistema tentou o modelo principal e uma alternativa; aguarde um instante e tente novamente." };
+    }
+    if (error instanceof Error && error.message === "IA_CONNECTION_FAILED") {
+      return { data: null, error: "Não foi possível conectar ao Gemini. Verifique a conexão do servidor e tente novamente." };
+    }
+    if (error instanceof Error && error.message === "IA_EMPTY_RESPONSE") {
+      return { data: null, error: "O Gemini não gerou conteúdo para esta solicitação. Revise o tópico ou documento-base e tente novamente." };
+    }
+    if (error instanceof Error && error.message === "IA_INVALID_JSON") {
+      return { data: null, error: "A IA retornou uma resposta fora do formato esperado. Tente gerar novamente." };
+    }
+    if (error instanceof Error && error.message.startsWith("IA_INVALID_CONTENT:")) {
+      return { data: null, error: `A resposta não passou pela validação pedagógica: ${error.message.slice("IA_INVALID_CONTENT:".length)}` };
+    }
+    throw error;
+  }
+
+  const conteudo = resultado.conteudo;
+  const titulo = typeof conteudo.titulo === "string" ? conteudo.titulo : "Material didático";
   const { data: artifact, error: artifactError } = await supabase
     .from("artefatos")
     .insert({
       professor_id: user.id,
       materia_id: input.materiaId,
       turma_id: input.turmaId,
-      ementa_id: input.ementaId,
-      pre_prompto_id: input.prePromptoId,
+      ementa_id: topic.ementa_id,
+      pre_prompto_id: preset?.id ?? null,
       tipo: input.tipo,
-      situacao: "rascunho",
-      titulo: input.titulo.trim(),
-      conteudo: input.conteudo,
-      texto_formatado: Object.values(input.conteudo).join("\n\n"),
-      snapshot_pre_prompto: input.snapshotPrePrompto,
+      situacao: "gerado",
+      titulo,
+      conteudo,
+      texto_formatado: textoDoMaterial(conteudo),
+      gabarito: conteudo.gabaritoComentado ?? null,
+      rubrica: conteudo.rubrica ?? null,
+      snapshot_pre_prompto: preset
+        ? {
+            nome: preset.nome,
+            descricao: preset.descricao,
+            nome_escola: preset.nome_escola,
+            nome_professor: preset.nome_professor,
+            instrucoes_fixas: preset.instrucoes_fixas,
+            colunas_layout: preset.colunas_layout,
+            layout_compacto: preset.layout_compacto,
+            familia_fonte: preset.familia_fonte,
+            tamanho_fonte: preset.tamanho_fonte,
+          }
+        : {},
+      versao: null,
+      modelo_geracao: resultado.modelo,
+      metadados_geracao: { provedor: "Google Gemini", ...resultado.uso },
+      gerado_em: new Date().toISOString(),
     })
     .select("id")
     .single();
@@ -460,8 +657,7 @@ export async function criarArtefato(input: {
     }
     return { data: null, error: errorMessage(linkError) };
   }
-  revalidatePath("/");
-  return { data: undefined, error: null };
+  return { data: { id: artifact.id, titulo, tipo: input.tipo, conteudo }, error: null };
 }
 
 const allowedResponseTypes = new Set([
