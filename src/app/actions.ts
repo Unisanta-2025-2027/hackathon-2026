@@ -12,14 +12,6 @@ export type ActionResult<T = undefined> =
   | { data: null; error: string };
 
 export type SubjectRecord = { id: string; nome: string; ano_letivo: number };
-export type ClassRecord = {
-  id: string;
-  materia_id: string;
-  nome: string;
-  turno: string | null;
-  semestre: number | null;
-  ano_letivo: number;
-};
 export type SyllabusRecord = {
   id: string;
   materia_id: string;
@@ -34,6 +26,7 @@ export type SyllabusUploadResult = {
   aviso: string | null;
 };
 export type SyllabusDeleteResult = { aviso: string | null };
+export type SubjectDeleteResult = { aviso: string | null };
 export type TopicRecord = {
   id: string;
   ementa_id: string;
@@ -64,7 +57,6 @@ export type TemplateRecord = {
 export type AppData = {
   professor: { id: string; nome_completo: string; nome_instituicao: string | null };
   materias: SubjectRecord[];
-  turmas: ClassRecord[];
   ementas: SyllabusRecord[];
   topicos: TopicRecord[];
   prePromptos: TemplateRecord[];
@@ -92,7 +84,6 @@ export async function carregarDados(): Promise<ActionResult<AppData | null>> {
   const [
     profileResult,
     subjectsResult,
-    classesResult,
     syllabiResult,
     topicsResult,
     templatesResult,
@@ -101,7 +92,6 @@ export async function carregarDados(): Promise<ActionResult<AppData | null>> {
   ] = await Promise.all([
     supabase.from("professores").select("id,nome_completo,nome_instituicao").eq("id", user.id).single(),
     supabase.from("materias").select("id,nome,ano_letivo").order("nome"),
-    supabase.from("turmas").select("id,materia_id,nome,turno,semestre,ano_letivo").order("nome"),
     supabase.from("ementas").select("id,materia_id,titulo,nome_arquivo,criado_em,situacao_extracao,erro_extracao").order("criado_em", { ascending: false }),
     supabase.from("topicos_ementa").select("id,ementa_id,materia_id,titulo,descricao,habilidades,situacao,ordem").order("ordem"),
     supabase.from("pre_promptos").select("id,materia_id,nome,descricao,ativo,tipos_artefato,nome_escola,nome_professor,instrucoes_fixas,colunas_layout,layout_compacto,familia_fonte,tamanho_fonte").order("criado_em"),
@@ -112,7 +102,6 @@ export async function carregarDados(): Promise<ActionResult<AppData | null>> {
   const firstError = [
     profileResult.error,
     subjectsResult.error,
-    classesResult.error,
     syllabiResult.error,
     topicsResult.error,
     templatesResult.error,
@@ -145,7 +134,6 @@ export async function carregarDados(): Promise<ActionResult<AppData | null>> {
     data: {
       professor: profileResult.data,
       materias: subjectsResult.data ?? [],
-      turmas: classesResult.data ?? [],
       ementas: syllabiResult.data ?? [],
       topicos: (topicsResult.data ?? []).map((topic) => {
         const progress = progressByTopic.get(topic.id);
@@ -229,7 +217,7 @@ async function usuarioAutenticado() {
 }
 
 export async function criarMateria(input: { nome: string; anoLetivo: number }): Promise<ActionResult<SubjectRecord>> {
-  if (!isNonEmptyString(input?.nome) || !Number.isInteger(input.anoLetivo) || input.anoLetivo < 2000 || input.anoLetivo > 2200) {
+  if (!isNonEmptyString(input?.nome) || input.nome.trim().length > 160 || !Number.isInteger(input.anoLetivo) || input.anoLetivo < 2000 || input.anoLetivo > 2200) {
     return { data: null, error: "Informe o nome da matéria e um ano letivo válido." };
   }
   const { supabase, user } = await usuarioAutenticado();
@@ -243,33 +231,89 @@ export async function criarMateria(input: { nome: string; anoLetivo: number }): 
   return { data, error: null };
 }
 
-export async function criarTurma(input: {
-  materiaId: string;
+export async function atualizarMateria(input: {
+  id: string;
   nome: string;
-  semestre: number | null;
-  turno: string | null;
-}): Promise<ActionResult<ClassRecord>> {
-  if (!isNonEmptyString(input?.materiaId) || !isNonEmptyString(input?.nome)) {
-    return { data: null, error: "Selecione a matéria e informe o nome da turma." };
-  }
-  if (input.semestre !== null && (!Number.isInteger(input.semestre) || input.semestre < 1 || input.semestre > 12)) {
-    return { data: null, error: "O semestre deve estar entre 1 e 12." };
+  anoLetivo: number;
+}): Promise<ActionResult<SubjectRecord>> {
+  if (
+    !isNonEmptyString(input?.id) ||
+    !isNonEmptyString(input?.nome) ||
+    input.nome.trim().length > 160 ||
+    !Number.isInteger(input.anoLetivo) ||
+    input.anoLetivo < 2000 ||
+    input.anoLetivo > 2200
+  ) {
+    return { data: null, error: "Informe um nome de até 160 caracteres e um ano letivo entre 2000 e 2200." };
   }
   const { supabase, user } = await usuarioAutenticado();
   const { data, error } = await supabase
-    .from("turmas")
-    .insert({
-      professor_id: user.id,
-      materia_id: input.materiaId,
-      nome: input.nome.trim(),
-      semestre: input.semestre,
-      turno: input.turno?.trim() || null,
-    })
-    .select("id,materia_id,nome,turno,semestre,ano_letivo")
-    .single();
+    .from("materias")
+    .update({ nome: input.nome.trim(), ano_letivo: input.anoLetivo })
+    .eq("id", input.id)
+    .eq("professor_id", user.id)
+    .select("id,nome,ano_letivo")
+    .maybeSingle();
   if (error) return { data: null, error: errorMessage(error) };
+  if (!data) return { data: null, error: "A matéria não foi encontrada ou não pertence à sua conta." };
   revalidatePath("/");
   return { data, error: null };
+}
+
+export async function excluirMateria(materiaId: string): Promise<ActionResult<SubjectDeleteResult>> {
+  if (!isNonEmptyString(materiaId)) return { data: null, error: "Selecione uma matéria válida para excluir." };
+  const { supabase, user } = await usuarioAutenticado();
+  const [syllabiResult, artifactsResult] = await Promise.all([
+    supabase.from("ementas").select("caminho_arquivo").eq("materia_id", materiaId).eq("professor_id", user.id),
+    supabase.from("artefatos").select("id").eq("materia_id", materiaId).eq("professor_id", user.id),
+  ]);
+  const relatedDataError = syllabiResult.error ?? artifactsResult.error;
+  if (relatedDataError) return { data: null, error: errorMessage(relatedDataError) };
+  const artifactIds = (artifactsResult.data ?? []).map(({ id }) => id);
+  let correctionPaths: string[] = [];
+  if (artifactIds.length) {
+    const correctionsResult = await supabase
+      .from("correcoes")
+      .select("caminho_resposta")
+      .in("artefato_id", artifactIds)
+      .eq("professor_id", user.id);
+    if (correctionsResult.error) return { data: null, error: errorMessage(correctionsResult.error) };
+    correctionPaths = (correctionsResult.data ?? [])
+      .map(({ caminho_resposta }) => caminho_resposta)
+      .filter((path): path is string => Boolean(path));
+  }
+
+  const { data, error } = await supabase
+    .from("materias")
+    .delete()
+    .eq("id", materiaId)
+    .eq("professor_id", user.id)
+    .select("id")
+    .maybeSingle();
+  if (error) return { data: null, error: errorMessage(error) };
+  if (!data) return { data: null, error: "A matéria não foi encontrada ou não pertence à sua conta." };
+
+  const syllabusPaths = (syllabiResult.data ?? [])
+    .map(({ caminho_arquivo }) => caminho_arquivo)
+    .filter((path): path is string => Boolean(path));
+  const cleanupErrors: string[] = [];
+  if (syllabusPaths.length) {
+    const { error: storageError } = await supabase.storage.from("documentos-base").remove([...new Set(syllabusPaths)]);
+    if (storageError) cleanupErrors.push(`documentos-base: ${errorMessage(storageError)}`);
+  }
+  if (correctionPaths.length) {
+    const { error: storageError } = await supabase.storage.from("respostas-avaliacao").remove([...new Set(correctionPaths)]);
+    if (storageError) cleanupErrors.push(`respostas-avaliacao: ${errorMessage(storageError)}`);
+  }
+  revalidatePath("/");
+  return {
+    data: {
+      aviso: cleanupErrors.length
+        ? `A matéria foi excluída, mas alguns arquivos armazenados não puderam ser removidos (${cleanupErrors.join("; ")}).`
+        : null,
+    },
+    error: null,
+  };
 }
 
 const maxUploadBytes = 25 * 1024 * 1024;
@@ -726,7 +770,6 @@ function textoDoMaterial(value: unknown, heading = ""): string {
 
 export async function gerarMaterialComIA(input: {
   materiaId: string;
-  turmaId: string | null;
   topicoIds: string[];
   prePromptoId: string | null;
   cabecalhoId: string | null;
@@ -827,21 +870,6 @@ export async function gerarMaterialComIA(input: {
   }
   const trechoDocumento = documentTexts.join("\n\n").slice(0, 60_000);
 
-  let classroomName = "";
-  if (input.turmaId) {
-    const { data: classroom, error } = await supabase
-      .from("turmas")
-      .select("id,nome,semestre,ano_letivo,turno")
-      .eq("id", input.turmaId)
-      .eq("materia_id", subject.id)
-      .eq("professor_id", user.id)
-      .single();
-    if (error) return { data: null, error: errorMessage(error) };
-    classroomName = [classroom.nome, classroom.semestre ? `${classroom.semestre}º semestre` : null, classroom.turno, classroom.ano_letivo]
-      .filter(Boolean)
-      .join(" · ");
-  }
-
   let preset: {
     id: string;
     nome: string;
@@ -877,7 +905,7 @@ export async function gerarMaterialComIA(input: {
     ativo: boolean;
     tipos_artefato: TipoMaterial[];
   } | null = null;
-  if (input.cabecalhoId) {
+  if (input.tipo !== "roteiro_aula" && input.cabecalhoId) {
     const { data, error } = await supabase
       .from("pre_promptos")
       .select("id,nome,nome_escola,nome_professor,ativo,tipos_artefato")
@@ -903,7 +931,6 @@ export async function gerarMaterialComIA(input: {
       professor: cabecalho.professor,
       instituicao: cabecalho.instituicao,
       materia: `${subject.nome} (${subject.ano_letivo})`,
-      turma: classroomName,
       topicos: selectedTopics.map((topic) => ({
         titulo: topic.titulo,
         descricao: topic.descricao ?? "",
@@ -960,7 +987,7 @@ export async function gerarMaterialComIA(input: {
     .insert({
       professor_id: user.id,
       materia_id: input.materiaId,
-      turma_id: input.turmaId,
+      turma_id: null,
       ementa_id: syllabusIds.length === 1 ? syllabusIds[0] : null,
       pre_prompto_id: header?.id ?? preset?.id ?? null,
       tipo: input.tipo,
